@@ -5,11 +5,10 @@ import base64
 import zlib
 import math
 
-# --- CẤU HÌNH HỆ THỐNG GITHUB (BẢO MẬT TUYỆT ĐỐI) ---
+# --- CẤU HÌNH HỆ THỐNG GITHUB ---
 GITHUB_USER = "letranthienphat"
 GITHUB_REPO = "Nexus-cloud-storage"
 
-# Lấy Token an toàn từ mục Secrets của Streamlit Cloud (Không bao giờ lo lộ hay bị GitHub quét)
 try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 except Exception:
@@ -68,13 +67,30 @@ st.set_page_config(page_title="Nexus Cloud Storage", page_icon="☁️", layout=
 st.title("☁️ Nexus Cloud Storage")
 st.caption("Ứng dụng lưu trữ đám mây bảo mật chạy trên nền tảng GitHub Backend")
 
-# Khởi tạo trạng thái phiên làm việc
+# Khởi tạo trạng thái phiên làm việc trong session_state nếu chưa có
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
+
+# --- XỬ LÝ COOKIE TỰ ĐỘNG ĐĂNG NHẬP ---
+# Kiểm tra nếu trong trình duyệt đã có cookie đăng nhập trước đó và session_state chưa được set
+if not st.session_state.logged_in:
+    saved_user = st.context.cookies.get("nexus_username")
+    saved_token = st.context.cookies.get("nexus_authtoken") # Token này chính là mật khẩu đã mã hóa base64 cơ bản
+    
+    if saved_user and saved_token:
+        try:
+            decoded_pass = base64.b64decode(saved_token.encode('utf-8')).decode('utf-8')
+            # Kiểm tra xem thông tin cookie có khớp với database trên GitHub không
+            if saved_user in metadata["users"] and metadata["users"][saved_user] == decoded_pass:
+                st.session_state.logged_in = True
+                st.session_state.username = saved_user
+                st.rerun()
+        except:
+            pass
 
 # --- MÀN HÌNH ĐĂNG NHẬP / ĐĂNG KÝ ---
 if not st.session_state.logged_in:
@@ -83,10 +99,20 @@ if not st.session_state.logged_in:
     with tab1:
         user_in = st.text_input("Tên đăng nhập", key="login_u")
         pass_in = st.text_input("Mật khẩu", type="password", key="login_p")
+        remember_me = st.checkbox("Tự động đăng nhập lần sau", value=True)
+        
         if st.button("Đăng nhập", use_container_width=True):
             if user_in in metadata["users"] and metadata["users"][user_in] == pass_in:
                 st.session_state.logged_in = True
                 st.session_state.username = user_in
+                
+                # Nếu người dùng tích chọn "Tự động đăng nhập", tiến hành lưu cookie
+                if remember_me:
+                    st.context.cookies["nexus_username"] = user_in
+                    # Mã hóa mật khẩu sang base64 để lưu vào cookie trình duyệt một cách cơ bản
+                    encoded_pass = base64.b64encode(pass_in.encode('utf-8')).decode('utf-8')
+                    st.context.cookies["nexus_authtoken"] = encoded_pass
+                
                 st.success("Đăng nhập thành công!")
                 st.rerun()
             else:
@@ -118,13 +144,20 @@ else:
     if c_out.button("Đăng xuất", type="primary", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""
+        
+        # Xóa bỏ các cookie lưu ở trình duyệt khi bấm Đăng xuất
+        if "nexus_username" in st.context.cookies:
+            del st.context.cookies["nexus_username"]
+        if "nexus_authtoken" in st.context.cookies:
+            del st.context.cookies["nexus_authtoken"]
+            
         st.rerun()
         
     st.divider()
     
-    # Khu vực Upload File (Nén và chia nhỏ phân mảnh)
+    # Khu vực Upload File (SỬA LỖI: Sử dụng st.file_uploader đúng quy chuẩn)
     st.subheader("📤 Tải lên file mới (Giới hạn tối đa 200MB)")
-    uploaded_file = st.file_input_button("Chọn file từ thiết bị của bạn", label_visibility="collapsed")
+    uploaded_file = st.file_uploader("Chọn file từ thiết bị của bạn", label_visibility="collapsed")
     
     if uploaded_file is not None:
         file_name = uploaded_file.name
@@ -134,43 +167,47 @@ else:
         if file_size > 200 * 1024 * 1024:
             st.error("Kích thước file vượt mức cho phép (200MB)!")
         else:
-            with st.spinner("🚀 Đang nén kịch trần và chia nhỏ phân mảnh lên GitHub..."):
-                # Nén zlib cấp độ cao nhất (9) để tối ưu dung lượng
-                compressed_data = zlib.compress(raw_data, level=9)
-                
-                # Cắt nhỏ file thành các mảnh 45MB để an toàn chống lỗi giới hạn GitHub
-                chunk_size = 45 * 1024 * 1024
-                total_chunks = math.ceil(len(compressed_data) / chunk_size)
-                
-                chunk_paths = []
-                upload_success = True
-                
-                for i in range(total_chunks):
-                    start = i * chunk_size
-                    end = min(start + chunk_size, len(compressed_data))
-                    chunk_bytes = compressed_data[start:end]
+            # Tạo một khóa kiểm tra để không bị upload lặp đi lặp lại khi Streamlit rerun giao diện
+            upload_key = f"uploaded_{file_name}_{file_size}"
+            if upload_key not in st.session_state:
+                with st.spinner("🚀 Đang nén kịch trần và chia nhỏ phân mảnh lên GitHub..."):
+                    # Nén zlib cấp độ cao nhất (9) để tối ưu dung lượng
+                    compressed_data = zlib.compress(raw_data, level=9)
                     
-                    chunk_filename = f"storage/{st.session_state.username}_{file_name}.part{i}"
-                    _, old_sha = get_github_file(chunk_filename)
+                    # Cắt nhỏ file thành các mảnh 45MB để an toàn chống lỗi giới hạn GitHub
+                    chunk_size = 45 * 1024 * 1024
+                    total_chunks = math.ceil(len(compressed_data) / chunk_size)
                     
-                    if not save_github_file(chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}"):
-                        upload_success = False
-                        break
-                    chunk_paths.append(chunk_filename)
-                
-                if upload_success:
-                    file_key = f"{st.session_state.username}_{file_name}"
-                    metadata["files"][file_key] = {
-                        "username": st.session_state.username,
-                        "filename": file_name,
-                        "total_chunks": total_chunks,
-                        "chunks": chunk_paths
-                    }
-                    save_metadata(metadata, db_sha)
-                    st.success(f"Đã lưu trữ file '{file_name}' thành công!")
-                    st.rerun()
-                else:
-                    st.error("Quá trình truyền tải dữ liệu mảnh lên GitHub gặp sự cố.")
+                    chunk_paths = []
+                    upload_success = True
+                    
+                    for i in range(total_chunks):
+                        start = i * chunk_size
+                        end = min(start + chunk_size, len(compressed_data))
+                        chunk_bytes = compressed_data[start:end]
+                        
+                        chunk_filename = f"storage/{st.session_state.username}_{file_name}.part{i}"
+                        _, old_sha = get_github_file(chunk_filename)
+                        
+                        if not save_github_file(chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}"):
+                            upload_success = False
+                            break
+                        chunk_paths.append(chunk_filename)
+                    
+                    if upload_success:
+                        file_key = f"{st.session_state.username}_{file_name}"
+                        metadata["files"][file_key] = {
+                            "username": st.session_state.username,
+                            "filename": file_name,
+                            "total_chunks": total_chunks,
+                            "chunks": chunk_paths
+                        }
+                        save_metadata(metadata, db_sha)
+                        st.session_state[upload_key] = True
+                        st.success(f"Đã lưu trữ file '{file_name}' thành công!")
+                        st.rerun()
+                    else:
+                        st.error("Quá trình truyền tải dữ liệu mảnh lên GitHub gặp sự cố.")
                     
     st.divider()
     
