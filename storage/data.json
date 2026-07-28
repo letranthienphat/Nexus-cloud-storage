@@ -2,5 +2,16 @@
     "users": {
         "Phát": "Tp27111510"
     },
-    "files": {}
+    "files": {
+        "Phát_pomixi.png": {
+            "username": "Phát",
+            "filename": "pomixi.png",
+            "total_chunks": 1,
+            "chunks": [
+                "storage/Phát_pomixi.png.part0"
+            ],
+            "size": 965390,
+            "upload_date": "28/07/2026 15:28"
+        }
+    }
 }
