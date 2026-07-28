@@ -11,6 +11,8 @@ from typing import Optional, Tuple, Dict, Any, List
 import os
 import zipfile
 import io
+import tempfile
+from pathlib import Path
 
 # --- CẤU HÌNH HỆ THỐNG ---
 GITHUB_USER = "letranthienphat"
@@ -208,6 +210,43 @@ st.markdown("""
         text-decoration: underline;
     }
     
+    /* Preview container */
+    .preview-container {
+        background: #f8f9fa;
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 1rem 0;
+        border: 1px solid #e0e0e0;
+    }
+    
+    .preview-container img {
+        max-width: 100%;
+        border-radius: 8px;
+    }
+    
+    .code-preview {
+        background: #1a1a2e;
+        color: #e0e0e0;
+        padding: 1rem;
+        border-radius: 8px;
+        overflow-x: auto;
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        max-height: 500px;
+        overflow-y: auto;
+    }
+    
+    .text-preview {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        max-height: 500px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-family: 'Courier New', monospace;
+    }
+    
     /* Responsive */
     @media (max-width: 768px) {
         .app-header h1 {
@@ -226,6 +265,9 @@ st.markdown("""
         }
         .upload-area {
             padding: 1.5rem 1rem;
+        }
+        .preview-container {
+            padding: 0.5rem;
         }
     }
     
@@ -257,6 +299,18 @@ st.markdown("""
         }
         .upload-area:hover {
             background: linear-gradient(135deg, #2a2a4e 0%, #3a3a5e 100%);
+        }
+        .preview-container {
+            background: #1a1a2e;
+            border-color: #2a2a4e;
+        }
+        .text-preview {
+            background: #1a1a2e;
+            border-color: #2a2a4e;
+            color: #e0e0e0;
+        }
+        .code-preview {
+            background: #0d0d1a;
         }
     }
 </style>
@@ -369,16 +423,40 @@ def get_file_icon(filename: str) -> str:
     """Lấy icon theo loại file"""
     ext = filename.split('.')[-1].lower() if '.' in filename else ''
     icons = {
-        'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'webp': '🖼️',
-        'mp4': '🎬', 'avi': '🎬', 'mov': '🎬', 'mkv': '🎬',
-        'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
+        'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'webp': '🖼️', 'svg': '🖼️',
+        'mp4': '🎬', 'avi': '🎬', 'mov': '🎬', 'mkv': '🎬', 'webm': '🎬',
+        'mp3': '🎵', 'wav': '🎵', 'flac': '🎵', 'aac': '🎵',
         'pdf': '📕',
-        'zip': '📦', 'rar': '📦', '7z': '📦',
+        'zip': '📦', 'rar': '📦', '7z': '📦', 'tar': '📦', 'gz': '📦',
         'py': '💻', 'js': '💻', 'html': '💻', 'css': '💻', 'java': '💻', 'cpp': '💻',
+        'c': '💻', 'go': '💻', 'rs': '💻', 'php': '💻', 'rb': '💻',
         'doc': '📄', 'docx': '📄', 'xls': '📊', 'xlsx': '📊', 'ppt': '📊', 'pptx': '📊',
-        'txt': '📝', 'md': '📝'
+        'txt': '📝', 'md': '📝', 'log': '📝',
+        'json': '📋', 'xml': '📋', 'yaml': '📋', 'yml': '📋'
     }
     return icons.get(ext, '📄')
+
+def is_image_file(filename: str) -> bool:
+    """Kiểm tra file có phải ảnh không"""
+    ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    return ext in ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico']
+
+def is_text_file(filename: str) -> bool:
+    """Kiểm tra file có phải text không"""
+    ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    text_exts = ['txt', 'md', 'py', 'js', 'html', 'css', 'java', 'cpp', 'c', 'go', 'rs', 
+                 'php', 'rb', 'json', 'xml', 'yaml', 'yml', 'log', 'sh', 'bash', 'csv']
+    return ext in text_exts
+
+def is_video_file(filename: str) -> bool:
+    """Kiểm tra file có phải video không"""
+    ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    return ext in ['mp4', 'avi', 'mov', 'mkv', 'webm', 'flv', 'wmv']
+
+def is_audio_file(filename: str) -> bool:
+    """Kiểm tra file có phải audio không"""
+    ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    return ext in ['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma']
 
 def get_folder_path_parts(path: str) -> List[str]:
     """Chia đường dẫn thư mục thành các phần"""
@@ -413,6 +491,210 @@ def get_folder_name(path: str) -> str:
     parts = get_folder_path_parts(path)
     return parts[-1] if parts else ""
 
+# --- HÀM TẢI XUỐNG FILE ---
+def download_file(file_info: Dict) -> Optional[bytes]:
+    """Tải và giải nén một file"""
+    try:
+        full_compressed = bytearray()
+        for chunk_path in file_info["chunks"]:
+            c_bytes, _ = get_github_file(chunk_path)
+            if c_bytes:
+                full_compressed.extend(c_bytes)
+            else:
+                return None
+        return zlib.decompress(bytes(full_compressed))
+    except:
+        return None
+
+# --- HÀM TẠO ZIP TỪ NHIỀU FILE ---
+def create_zip_from_files(files: List[Dict]) -> Optional[bytes]:
+    """Tạo file ZIP từ danh sách file"""
+    try:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for file_info in files:
+                file_data = download_file(file_info)
+                if file_data:
+                    # Lấy tên file và đường dẫn tương đối
+                    filename = file_info["filename"]
+                    folder_path = file_info.get("folder_path", "")
+                    if folder_path:
+                        arcname = f"{folder_path}/{filename}"
+                    else:
+                        arcname = filename
+                    zip_file.writestr(arcname, file_data)
+        
+        return zip_buffer.getvalue()
+    except:
+        return None
+
+# --- GET FILES IN FOLDER ---
+def get_files_in_folder(metadata: Dict, username: str, folder_path: str) -> List[Dict]:
+    """Lấy danh sách file trong một thư mục"""
+    result = []
+    normalized_folder = normalize_path(folder_path)
+    
+    for file_key, file_info in metadata["files"].items():
+        if file_info["username"] != username:
+            continue
+        
+        file_folder = normalize_path(file_info.get("folder_path", ""))
+        
+        if normalized_folder == "/" or normalized_folder == "":
+            if not file_folder:
+                result.append(file_info)
+        else:
+            if file_folder == normalized_folder or file_folder.startswith(f"{normalized_folder}/"):
+                result.append(file_info)
+    
+    return result
+
+# --- GET ALL FILES IN FOLDER AND SUBFOLDERS ---
+def get_all_files_recursive(metadata: Dict, username: str, folder_path: str) -> List[Dict]:
+    """Lấy tất cả file trong thư mục và các thư mục con"""
+    result = []
+    normalized_folder = normalize_path(folder_path)
+    
+    for file_key, file_info in metadata["files"].items():
+        if file_info["username"] != username:
+            continue
+        
+        file_folder = normalize_path(file_info.get("folder_path", ""))
+        
+        if normalized_folder == "/" or normalized_folder == "":
+            result.append(file_info)
+        else:
+            if file_folder == normalized_folder or file_folder.startswith(f"{normalized_folder}/"):
+                result.append(file_info)
+    
+    return result
+
+# --- GET SUBFOLDERS ---
+def get_subfolders(metadata: Dict, username: str, folder_path: str) -> List[str]:
+    """Lấy danh sách thư mục con"""
+    subfolders = set()
+    normalized_folder = normalize_path(folder_path)
+    
+    for file_key, file_info in metadata["files"].items():
+        if file_info["username"] != username:
+            continue
+        
+        file_folder = normalize_path(file_info.get("folder_path", ""))
+        
+        if not file_folder:
+            continue
+        
+        if normalized_folder == "/" or normalized_folder == "":
+            parts = get_folder_path_parts(file_folder)
+            if parts:
+                subfolders.add(parts[0])
+        else:
+            if file_folder.startswith(f"{normalized_folder}/"):
+                remaining = file_folder[len(normalized_folder)+1:]
+                parts = get_folder_path_parts(remaining)
+                if parts:
+                    subfolders.add(parts[0])
+    
+    return sorted(list(subfolders))
+
+# --- DELETE FOLDER ---
+def delete_folder(metadata: Dict, username: str, folder_path: str, db_sha: str) -> bool:
+    """Xóa một thư mục và tất cả file bên trong"""
+    normalized_folder = normalize_path(folder_path)
+    files_to_delete = []
+    
+    for file_key, file_info in metadata["files"].items():
+        if file_info["username"] != username:
+            continue
+        
+        file_folder = normalize_path(file_info.get("folder_path", ""))
+        
+        if file_folder == normalized_folder or file_folder.startswith(f"{normalized_folder}/"):
+            files_to_delete.append(file_key)
+    
+    if not files_to_delete:
+        st.warning("⚠️ Thư mục trống hoặc không tồn tại!")
+        return False
+    
+    success_count = 0
+    with st.spinner(f"🗑️ Đang xóa {len(files_to_delete)} file..."):
+        for file_key in files_to_delete:
+            file_info = metadata["files"][file_key]
+            
+            for chunk_path in file_info["chunks"]:
+                _, c_sha = get_github_file(chunk_path)
+                if c_sha:
+                    delete_github_file(chunk_path, c_sha)
+            
+            del metadata["files"][file_key]
+            success_count += 1
+        
+        if success_count > 0:
+            save_metadata(metadata, db_sha)
+            st.success(f"✅ Đã xóa thư mục '{get_folder_name(folder_path)}' và {success_count} file!")
+            return True
+    
+    return False
+
+# --- CREATE FOLDER ---
+def create_folder(metadata: Dict, username: str, folder_path: str, folder_name: str, db_sha: str) -> bool:
+    """Tạo một thư mục mới"""
+    # Kiểm tra tên thư mục hợp lệ
+    if not folder_name or folder_name == "":
+        st.error("❌ Tên thư mục không được để trống!")
+        return False
+    
+    # Kiểm tra tên thư mục không chứa ký tự đặc biệt
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    for char in invalid_chars:
+        if char in folder_name:
+            st.error(f"❌ Tên thư mục không được chứa ký tự: {char}")
+            return False
+    
+    # Tạo đường dẫn đầy đủ
+    current_path = normalize_path(folder_path)
+    if current_path and current_path != "/":
+        full_folder_path = f"{current_path}/{folder_name}"
+    else:
+        full_folder_path = folder_name
+    
+    # Kiểm tra thư mục đã tồn tại
+    existing_files = get_files_in_folder(metadata, username, full_folder_path)
+    if existing_files:
+        st.error("❌ Thư mục đã tồn tại!")
+        return False
+    
+    # Tạo một file placeholder trong thư mục để đánh dấu
+    placeholder_content = f"Folder created at {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+    placeholder_bytes = placeholder_content.encode('utf-8')
+    
+    # Nén placeholder
+    compressed_data = zlib.compress(placeholder_bytes, level=9)
+    chunk_path = f"storage/{username}_{full_folder_path}/.folder_placeholder.part0"
+    
+    if save_github_file(chunk_path, compressed_data, None, f"Create folder: {full_folder_path}"):
+        # Thêm vào metadata
+        file_key = f"{username}_{full_folder_path}/.folder_placeholder"
+        metadata["files"][file_key] = {
+            "username": username,
+            "filename": ".folder_placeholder",
+            "full_path": f"{full_folder_path}/.folder_placeholder",
+            "folder_path": full_folder_path,
+            "total_chunks": 1,
+            "chunks": [chunk_path],
+            "size": len(placeholder_bytes),
+            "upload_date": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "file_type": "TXT",
+            "is_placeholder": True
+        }
+        
+        if save_metadata(metadata, db_sha):
+            st.success(f"✅ Đã tạo thư mục '{folder_name}' thành công!")
+            return True
+    
+    st.error("❌ Lỗi tạo thư mục!")
+    return False
+
 # --- UPLOAD MULTIPLE FILES ---
 def upload_multiple_files(files: List, current_path: str, username: str, metadata: Dict, db_sha: str) -> Tuple[bool, int, int]:
     """Tải nhiều file lên cùng lúc"""
@@ -429,20 +711,17 @@ def upload_multiple_files(files: List, current_path: str, username: str, metadat
             raw_data = uploaded_file.read()
             file_size = len(raw_data)
             
-            # Kiểm tra kích thước
             if file_size > MAX_FILE_SIZE:
                 st.warning(f"⚠️ File '{file_name}' vượt quá 200MB, bỏ qua!")
                 fail_count += 1
                 progress_bar.progress((idx + 1) / total_files)
                 continue
             
-            # Tạo đường dẫn đầy đủ
             if current_path and current_path != "/":
                 full_path = f"{current_path}/{file_name}"
             else:
                 full_path = file_name
             
-            # Nén và chia nhỏ
             compressed_data = zlib.compress(raw_data, level=9)
             chunk_size = 45 * 1024 * 1024
             total_chunks = math.ceil(len(compressed_data) / chunk_size)
@@ -476,7 +755,8 @@ def upload_multiple_files(files: List, current_path: str, username: str, metadat
                     "chunks": chunk_paths,
                     "size": file_size,
                     "upload_date": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "file_type": file_name.split('.')[-1].upper() if '.' in file_name else "UNKNOWN"
+                    "file_type": file_name.split('.')[-1].upper() if '.' in file_name else "UNKNOWN",
+                    "is_placeholder": False
                 }
                 success_count += 1
             else:
@@ -488,7 +768,6 @@ def upload_multiple_files(files: List, current_path: str, username: str, metadat
         
         progress_bar.progress((idx + 1) / total_files)
     
-    # Lưu metadata
     if success_count > 0:
         save_metadata(metadata, db_sha)
     
@@ -508,7 +787,6 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
             file_list = []
             for file_info in zip_ref.filelist:
                 if not file_info.is_dir():
-                    # Đọc file từ zip
                     file_data = zip_ref.read(file_info.filename)
                     file_size = len(file_data)
                     
@@ -526,7 +804,6 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
             st.warning("⚠️ Không có file hợp lệ trong thư mục!")
             return False, 0, 0
         
-        # Upload từng file
         success_count = 0
         fail_count = 0
         total_files = len(file_list)
@@ -538,16 +815,13 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
             try:
                 file_name = file_info['name']
                 raw_data = file_info['data']
-                file_size = file_info['size']
                 
-                # Tạo đường dẫn đầy đủ
                 relative_path = file_info['path']
                 if current_path and current_path != "/":
                     full_path = f"{current_path}/{relative_path}"
                 else:
                     full_path = relative_path
                 
-                # Nén và chia nhỏ
                 compressed_data = zlib.compress(raw_data, level=9)
                 chunk_size = 45 * 1024 * 1024
                 total_chunks = math.ceil(len(compressed_data) / chunk_size)
@@ -581,7 +855,8 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
                         "chunks": chunk_paths,
                         "size": file_size,
                         "upload_date": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                        "file_type": file_name.split('.')[-1].upper() if '.' in file_name else "UNKNOWN"
+                        "file_type": file_name.split('.')[-1].upper() if '.' in file_name else "UNKNOWN",
+                        "is_placeholder": False
                     }
                     success_count += 1
                 else:
@@ -593,7 +868,6 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
             
             progress_bar.progress((idx + 1) / total_files)
         
-        # Lưu metadata
         if success_count > 0:
             save_metadata(metadata, db_sha)
         
@@ -606,100 +880,6 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
         st.error(f"❌ Lỗi xử lý thư mục: {str(e)[:100]}")
         return False, 0, 0
 
-# --- GET FILES IN FOLDER ---
-def get_files_in_folder(metadata: Dict, username: str, folder_path: str) -> List[Dict]:
-    """Lấy danh sách file trong một thư mục"""
-    result = []
-    normalized_folder = normalize_path(folder_path)
-    
-    for file_key, file_info in metadata["files"].items():
-        if file_info["username"] != username:
-            continue
-        
-        file_folder = normalize_path(file_info.get("folder_path", ""))
-        
-        # Kiểm tra xem file có nằm trong thư mục này không
-        if normalized_folder == "/" or normalized_folder == "":
-            if not file_folder:
-                result.append(file_info)
-        else:
-            if file_folder == normalized_folder or file_folder.startswith(f"{normalized_folder}/"):
-                result.append(file_info)
-    
-    return result
-
-# --- GET SUBFOLDERS ---
-def get_subfolders(metadata: Dict, username: str, folder_path: str) -> List[str]:
-    """Lấy danh sách thư mục con"""
-    subfolders = set()
-    normalized_folder = normalize_path(folder_path)
-    
-    for file_key, file_info in metadata["files"].items():
-        if file_info["username"] != username:
-            continue
-        
-        file_folder = normalize_path(file_info.get("folder_path", ""))
-        
-        if not file_folder:
-            continue
-        
-        if normalized_folder == "/" or normalized_folder == "":
-            # Lấy thư mục cấp 1
-            parts = get_folder_path_parts(file_folder)
-            if parts:
-                subfolders.add(parts[0])
-        else:
-            # Lấy thư mục con
-            if file_folder.startswith(f"{normalized_folder}/"):
-                remaining = file_folder[len(normalized_folder)+1:]
-                parts = get_folder_path_parts(remaining)
-                if parts:
-                    subfolders.add(parts[0])
-    
-    return sorted(list(subfolders))
-
-# --- DELETE FOLDER ---
-def delete_folder(metadata: Dict, username: str, folder_path: str, db_sha: str) -> bool:
-    """Xóa một thư mục và tất cả file bên trong"""
-    normalized_folder = normalize_path(folder_path)
-    files_to_delete = []
-    
-    # Tìm tất cả file trong thư mục
-    for file_key, file_info in metadata["files"].items():
-        if file_info["username"] != username:
-            continue
-        
-        file_folder = normalize_path(file_info.get("folder_path", ""))
-        
-        if file_folder == normalized_folder or file_folder.startswith(f"{normalized_folder}/"):
-            files_to_delete.append(file_key)
-    
-    if not files_to_delete:
-        st.warning("⚠️ Thư mục trống hoặc không tồn tại!")
-        return False
-    
-    # Xóa từng file
-    success_count = 0
-    with st.spinner(f"🗑️ Đang xóa {len(files_to_delete)} file..."):
-        for file_key in files_to_delete:
-            file_info = metadata["files"][file_key]
-            
-            # Xóa các chunk
-            for chunk_path in file_info["chunks"]:
-                _, c_sha = get_github_file(chunk_path)
-                if c_sha:
-                    delete_github_file(chunk_path, c_sha)
-            
-            del metadata["files"][file_key]
-            success_count += 1
-        
-        if success_count > 0:
-            save_metadata(metadata, db_sha)
-            st.success(f"✅ Đã xóa thư mục '{get_folder_name(folder_path)}' và {success_count} file!")
-            return True
-    
-    return False
-
 # --- RENDER FOLDER VIEW ---
 def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha: str):
     """Hiển thị giao diện thư mục"""
@@ -711,10 +891,9 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
     if current_path and current_path != "/":
         path_parts = get_folder_path_parts(current_path)
     
-    # Hiển thị breadcrumb
     breadcrumb_html = "📂 "
     if current_path == "/" or not current_path:
-        breadcrumb_html += "<span onclick=''>📁 Gốc</span>"
+        breadcrumb_html += "<span>📁 Gốc</span>"
     else:
         breadcrumb_html += "<span onclick=''>📁 Gốc</span>"
         accumulated = ""
@@ -728,16 +907,32 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
     st.markdown(breadcrumb_html, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
+    # Nút tạo thư mục
+    with st.expander("📁 Tạo thư mục mới", expanded=False):
+        col_input, col_btn = st.columns([3, 1])
+        with col_input:
+            new_folder_name = st.text_input("Tên thư mục", placeholder="Nhập tên thư mục", key="new_folder_input")
+        with col_btn:
+            if st.button("➕ Tạo", use_container_width=True):
+                if new_folder_name:
+                    if create_folder(metadata, username, current_path, new_folder_name, db_sha):
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Vui lòng nhập tên thư mục!")
+    
     # Lấy danh sách thư mục con và file
     subfolders = get_subfolders(metadata, username, current_path)
     files = get_files_in_folder(metadata, username, current_path)
     
     # Hiển thị thống kê
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.info(f"📁 {len(subfolders)} thư mục")
     with col2:
         st.info(f"📄 {len(files)} file")
+    with col3:
+        total_size = sum(f.get("size", 0) for f in files)
+        st.info(f"💾 {format_size(total_size)}")
     
     # Hiển thị thư mục
     if subfolders:
@@ -746,21 +941,41 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
             folder_path = f"{current_path}/{folder_name}" if current_path and current_path != "/" else folder_name
             
             with st.container():
-                col_icon, col_name, col_actions = st.columns([0.5, 4, 1.5])
+                col_icon, col_name, col_info, col_actions = st.columns([0.5, 2, 1.5, 2])
                 with col_icon:
                     st.markdown("📂")
                 with col_name:
                     st.markdown(f"**{folder_name}**")
+                with col_info:
                     file_count = len(get_files_in_folder(metadata, username, folder_path))
                     st.caption(f"{file_count} file")
                 with col_actions:
-                    col_open, col_delete = st.columns(2)
+                    col_open, col_download, col_delete = st.columns(3)
                     with col_open:
-                        if st.button("📂 Mở", key=f"open_{folder_name}_{folder_path}"):
+                        if st.button("📂 Mở", key=f"open_{folder_path}", use_container_width=True):
                             st.session_state.current_path = folder_path
                             st.rerun()
+                    with col_download:
+                        if st.button("📥 ZIP", key=f"dl_folder_{folder_path}", help="Tải xuống thư mục dạng ZIP", use_container_width=True):
+                            with st.spinner("⏳ Đang tạo file ZIP..."):
+                                all_files = get_all_files_recursive(metadata, username, folder_path)
+                                if all_files:
+                                    zip_data = create_zip_from_files(all_files)
+                                    if zip_data:
+                                        st.download_button(
+                                            label="💾 Lưu ZIP",
+                                            data=zip_data,
+                                            file_name=f"{folder_name}.zip",
+                                            key=f"save_zip_{folder_path}",
+                                            type="primary",
+                                            use_container_width=True
+                                        )
+                                    else:
+                                        st.error("❌ Lỗi tạo file ZIP!")
+                                else:
+                                    st.warning("⚠️ Thư mục trống!")
                     with col_delete:
-                        if st.button("🗑️", key=f"del_folder_{folder_name}_{folder_path}", help="Xóa thư mục"):
+                        if st.button("🗑️", key=f"del_folder_{folder_path}", help="Xóa thư mục", use_container_width=True):
                             if delete_folder(metadata, username, folder_path, db_sha):
                                 st.rerun()
     
@@ -773,73 +988,163 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
             f_key = f"{username}_{f['full_path']}"
             f_size = f.get("size", 0)
             f_date = f.get("upload_date", "Chưa có ngày")
+            f_type = f.get("file_type", "UNKNOWN")
+            is_placeholder = f.get("is_placeholder", False)
+            
+            # Bỏ qua placeholder
+            if is_placeholder:
+                continue
             
             with st.container():
-                st.markdown(f"""
-                <div class="file-item">
-                    <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
-                        <span style="font-size: 1.2rem;">{get_file_icon(f_name)}</span>
-                        <div style="flex: 1;">
-                            <div class="file-name">{f_name}</div>
-                            <div class="file-meta">💾 {format_size(f_size)} • 📅 {f_date}</div>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                col_icon, col_info, col_preview, col_actions = st.columns([0.5, 2, 1.5, 2])
                 
-                col_dl, col_del = st.columns(2)
+                with col_icon:
+                    st.markdown(f"<span style='font-size: 1.5rem;'>{get_file_icon(f_name)}</span>", unsafe_allow_html=True)
                 
-                with col_dl:
-                    if st.button(f"📥 Tải xuống", key=f"dl_{idx}_{f_key}", use_container_width=True):
-                        with st.spinner("⏳ Đang tải và giải nén..."):
-                            full_compressed = bytearray()
-                            download_err = False
-                            
-                            for chunk_path in f["chunks"]:
-                                c_bytes, _ = get_github_file(chunk_path)
-                                if c_bytes:
-                                    full_compressed.extend(c_bytes)
-                                else:
-                                    download_err = True
-                                    break
-                            
-                            if download_err:
-                                st.error("❌ Lỗi tải các mảnh dữ liệu!")
-                            else:
-                                try:
-                                    original_data = zlib.decompress(bytes(full_compressed))
+                with col_info:
+                    st.markdown(f"**{f_name}**")
+                    st.caption(f"💾 {format_size(f_size)} • 📅 {f_date}")
+                
+                with col_preview:
+                    if is_image_file(f_name) or is_text_file(f_name) or is_video_file(f_name) or is_audio_file(f_name):
+                        if st.button("👁️ Xem", key=f"preview_{idx}_{f_key}", use_container_width=True):
+                            st.session_state.preview_file = f_key
+                            st.rerun()
+                    else:
+                        st.caption("🔒 Không xem được")
+                
+                with col_actions:
+                    col_dl, col_dl_zip, col_del = st.columns(3)
+                    
+                    # Tải xuống trực tiếp
+                    with col_dl:
+                        if st.button("📥 DL", key=f"dl_{idx}_{f_key}", help="Tải xuống file", use_container_width=True):
+                            with st.spinner("⏳ Đang tải..."):
+                                file_data = download_file(f)
+                                if file_data:
                                     st.download_button(
-                                        label="💾 Lưu file",
-                                        data=original_data,
+                                        label="💾 Lưu",
+                                        data=file_data,
                                         file_name=f_name,
-                                        key=f"save_{idx}_{f_key}",
+                                        key=f"save_dl_{idx}_{f_key}",
                                         type="primary",
                                         use_container_width=True
                                     )
-                                except Exception as e:
-                                    st.error(f"❌ Lỗi giải nén: {str(e)[:100]}")
+                                else:
+                                    st.error("❌ Lỗi tải file!")
+                    
+                    # Tải xuống dạng ZIP
+                    with col_dl_zip:
+                        if st.button("📦 ZIP", key=f"dl_zip_{idx}_{f_key}", help="Tải xuống file dạng ZIP", use_container_width=True):
+                            with st.spinner("⏳ Đang tạo ZIP..."):
+                                file_data = download_file(f)
+                                if file_data:
+                                    zip_buffer = io.BytesIO()
+                                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                                        zip_file.writestr(f_name, file_data)
+                                    zip_data = zip_buffer.getvalue()
+                                    
+                                    st.download_button(
+                                        label="💾 Lưu ZIP",
+                                        data=zip_data,
+                                        file_name=f"{f_name}.zip",
+                                        key=f"save_zip_{idx}_{f_key}",
+                                        type="primary",
+                                        use_container_width=True
+                                    )
+                                else:
+                                    st.error("❌ Lỗi tạo ZIP!")
+                    
+                    # Xóa file
+                    with col_del:
+                        if st.button("🗑️", key=f"del_{idx}_{f_key}", help="Xóa file", use_container_width=True):
+                            delete_success = True
+                            for chunk_path in f["chunks"]:
+                                _, c_sha = get_github_file(chunk_path)
+                                if c_sha:
+                                    if not delete_github_file(chunk_path, c_sha):
+                                        delete_success = False
+                            
+                            if delete_success:
+                                del metadata["files"][f_key]
+                                if save_metadata(metadata, db_sha):
+                                    st.toast(f"✅ Đã xóa '{f_name}'", icon="🗑️")
+                                    st.rerun()
+    
+    # --- PREVIEW FILE ---
+    if hasattr(st.session_state, 'preview_file') and st.session_state.preview_file:
+        preview_key = st.session_state.preview_file
+        preview_file_info = None
+        
+        for f_key, f_info in metadata["files"].items():
+            if f_key == preview_key:
+                preview_file_info = f_info
+                break
+        
+        if preview_file_info:
+            f_name = preview_file_info["filename"]
+            
+            st.markdown("---")
+            st.markdown(f"### 👁️ Xem trước: {f_name}")
+            
+            with st.spinner("⏳ Đang tải file..."):
+                file_data = download_file(preview_file_info)
                 
-                with col_del:
-                    if st.button(f"🗑️ Xóa", key=f"del_{idx}_{f_key}", use_container_width=True):
-                        # Xóa file
-                        delete_success = True
-                        for chunk_path in f["chunks"]:
-                            _, c_sha = get_github_file(chunk_path)
-                            if c_sha:
-                                if not delete_github_file(chunk_path, c_sha):
-                                    delete_success = False
-                        
-                        if delete_success:
-                            del metadata["files"][f_key]
-                            if save_metadata(metadata, db_sha):
-                                st.toast(f"✅ Đã xóa '{f_name}'", icon="🗑️")
-                                st.rerun()
+                if file_data:
+                    if is_image_file(f_name):
+                        st.image(file_data, use_column_width=True)
+                    
+                    elif is_video_file(f_name):
+                        try:
+                            import base64
+                            video_base64 = base64.b64encode(file_data).decode()
+                            st.markdown(f"""
+                            <video controls style="width: 100%; max-height: 500px;">
+                                <source src="data:video/mp4;base64,{video_base64}" type="video/mp4">
+                                Trình duyệt của bạn không hỗ trợ video.
+                            </video>
+                            """, unsafe_allow_html=True)
+                        except:
+                            st.warning("⚠️ Không thể hiển thị video này!")
+                    
+                    elif is_audio_file(f_name):
+                        try:
+                            import base64
+                            audio_base64 = base64.b64encode(file_data).decode()
+                            st.markdown(f"""
+                            <audio controls style="width: 100%;">
+                                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mpeg">
+                                Trình duyệt của bạn không hỗ trợ audio.
+                            </audio>
+                            """, unsafe_allow_html=True)
+                        except:
+                            st.warning("⚠️ Không thể phát audio này!")
+                    
+                    elif is_text_file(f_name):
+                        try:
+                            text_content = file_data.decode('utf-8')
+                            # Giới hạn hiển thị để tránh quá tải
+                            if len(text_content) > 100000:
+                                text_content = text_content[:100000] + "\n\n... (File quá lớn, chỉ hiển thị 100KB đầu)"
+                            st.markdown(f'<div class="text-preview">{text_content}</div>', unsafe_allow_html=True)
+                        except:
+                            st.warning("⚠️ Không thể hiển thị nội dung text!")
+                    
+                    else:
+                        st.info(f"📄 File '{f_name}' không hỗ trợ xem trước.")
+                
+                else:
+                    st.error("❌ Lỗi tải file để xem trước!")
+            
+            if st.button("❌ Đóng xem trước", use_container_width=True):
+                del st.session_state.preview_file
+                st.rerun()
 
 # --- HEADER ---
 st.markdown("""
 <div class="app-header">
     <h1>☁️ Nexus Cloud Storage</h1>
-    <p>🚀 Lưu trữ đám mây cá nhân - Hỗ trợ nhiều file và thư mục</p>
+    <p>🚀 Lưu trữ đám mây cá nhân - Xem trước file, tải xuống linh hoạt</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -854,6 +1159,8 @@ if "upload_in_progress" not in st.session_state:
     st.session_state.upload_in_progress = False
 if "current_path" not in st.session_state:
     st.session_state.current_path = "/"
+if "preview_file" not in st.session_state:
+    st.session_state.preview_file = None
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
@@ -946,7 +1253,7 @@ else:
         st.markdown(f"### 👋 Xin chào, **{st.session_state.username}**")
     
     with col_stats:
-        total_files = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username)
+        total_files = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username and not v.get("is_placeholder", False))
         total_size = sum(v.get("size", 0) for v in metadata["files"].values() if v["username"] == st.session_state.username)
         st.markdown(f"**📊 {total_files}** file • **{format_size(total_size)}**")
     
@@ -956,6 +1263,7 @@ else:
             st.session_state.username = ""
             st.session_state.remember_me = False
             st.session_state.current_path = "/"
+            st.session_state.preview_file = None
             st.query_params.clear()
             st.rerun()
     
@@ -987,7 +1295,6 @@ else:
         if uploaded_files or uploaded_zip:
             current_path = st.session_state.current_path
             
-            # Hiển thị thông tin
             st.info(f"📂 Vị trí tải lên: {'/'.join(get_folder_path_parts(current_path)) if current_path != '/' else 'Gốc'}")
             
             if uploaded_files and not st.session_state.upload_in_progress:
@@ -1039,6 +1346,7 @@ else:
     <div style="text-align: center; padding: 1rem 0; color: #6c757d; font-size: 0.85rem;">
         <p>🔒 Bảo mật tuyệt đối • 🚀 Tốc độ cao • ☁️ Lưu trữ mãi mãi</p>
         <p>📁 Hỗ trợ tải lên nhiều file và thư mục • 💾 Mỗi file tối đa 200MB</p>
-        <p>© 2026 Nexus Cloud Storage • Powered by GitHub and Streamlit</p>
+        <p>👁️ Xem trước ảnh, video, audio, text, code • 📦 Tải xuống dạng ZIP</p>
+        <p>© 2026 Nexus Cloud Storage • Powered by GitHub</p>
     </div>
     """, unsafe_allow_html=True)
