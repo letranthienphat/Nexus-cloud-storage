@@ -2,5 +2,21 @@
     "users": {
         "Phát": "Tp27111510"
     },
-    "files": {}
+    "files": {
+        "Phát_download.py": {
+            "username": "Phát",
+            "filename": "download.py",
+            "full_path": "download.py",
+            "folder_path": "",
+            "total_chunks": 1,
+            "chunks": [
+                "storage/Phát_download.py.part0"
+            ],
+            "size": 4231,
+            "upload_date": "28/07/2026 15:38",
+            "file_type": "PY",
+            "is_placeholder": false
+        }
+    },
+    "folders": {}
 }
