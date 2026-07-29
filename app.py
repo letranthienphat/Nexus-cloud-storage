@@ -240,7 +240,7 @@ def api_call_with_retry(func, *args, **kwargs):
     return None
 
 # --- CÁC HÀM XỬ LÝ LƯU TRỮ VỚI GITHUB ---
-@st.cache_data(ttl=5)  # Giảm TTL để refresh nhanh hơn
+@st.cache_data(ttl=5)
 def get_github_file(path: str) -> Tuple[Optional[bytes], Optional[str]]:
     """Đọc dữ liệu từ một file trên GitHub với cache"""
     try:
@@ -293,14 +293,13 @@ def delete_github_file(path: str, sha: str, message: str = "Delete") -> bool:
         return False
 
 # --- CƠ CHẾ ĐỒNG BỘ CƠ SỞ DỮ LIỆU ---
-@st.cache_data(ttl=5)  # Giảm TTL để refresh nhanh hơn
+@st.cache_data(ttl=5)
 def load_metadata() -> Tuple[Dict, Optional[str]]:
     """Tải thông tin người dùng và file từ storage/data.json"""
     file_bytes, sha = get_github_file("storage/data.json")
     if file_bytes:
         try:
             data = json.loads(file_bytes.decode('utf-8'))
-            # Đảm bảo có đủ key
             if "users" not in data:
                 data["users"] = {}
             if "files" not in data:
@@ -309,7 +308,6 @@ def load_metadata() -> Tuple[Dict, Optional[str]]:
         except json.JSONDecodeError:
             st.error("❌ Lỗi định dạng dữ liệu JSON!")
     
-    # Nếu chưa có file hoặc lỗi, tạo dữ liệu mặc định
     default_data = {"users": {}, "files": {}}
     content_bytes = json.dumps(default_data, indent=4, ensure_ascii=False).encode('utf-8')
     if save_github_file("storage/data.json", content_bytes, None, "Khởi tạo dữ liệu hệ thống"):
@@ -322,7 +320,6 @@ def save_metadata(metadata: Dict, sha: Optional[str]) -> bool:
         content_bytes = json.dumps(metadata, indent=4, ensure_ascii=False).encode('utf-8')
         result = save_github_file("storage/data.json", content_bytes, sha, "Cập nhật metadata hệ thống")
         if result:
-            # Clear cache sau khi lưu thành công
             load_metadata.clear()
             get_github_file.clear()
         return result
@@ -332,11 +329,9 @@ def save_metadata(metadata: Dict, sha: Optional[str]) -> bool:
 
 # --- HÀM TIỆN ÍCH ---
 def hash_password(password: str) -> str:
-    """Tạo hash SHA256 cho mật khẩu"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def format_size(size_bytes: int) -> str:
-    """Định dạng kích thước file"""
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
@@ -345,6 +340,24 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024 / 1024:.1f} MB"
     else:
         return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
+
+def download_file(file_info):
+    """Tải và giải nén file từ GitHub"""
+    full_compressed = bytearray()
+    
+    for chunk_path in file_info["chunks"]:
+        c_bytes, _ = get_github_file(chunk_path)
+        if c_bytes is None:
+            return None, f"Không tìm thấy chunk: {chunk_path}"
+        full_compressed.extend(c_bytes)
+    
+    try:
+        original_data = zlib.decompress(bytes(full_compressed))
+        return original_data, None
+    except zlib.error as e:
+        return None, f"Lỗi giải nén: {str(e)}"
+    except Exception as e:
+        return None, f"Lỗi không xác định: {str(e)}"
 
 def upload_single_file(file_data, username, metadata, db_sha):
     """Tải lên một file đơn lẻ"""
@@ -360,10 +373,7 @@ def upload_single_file(file_data, username, metadata, db_sha):
         }
     
     try:
-        # Nén file
         compressed_data = zlib.compress(raw_data, level=9)
-        
-        # Chia nhỏ file
         chunk_size = 45 * 1024 * 1024
         total_chunks = math.ceil(len(compressed_data) / chunk_size)
         
@@ -377,7 +387,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
             chunk_filename = f"storage/{username}_{file_name}.part{i}"
             _, old_sha = get_github_file(chunk_filename)
             
-            # Upload chunk với retry
             if not api_call_with_retry(save_github_file, chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}"):
                 return {
                     "success": False,
@@ -386,7 +395,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
                 }
             chunk_paths.append(chunk_filename)
         
-        # Lưu metadata
         file_key = f"{username}_{file_name}"
         metadata["files"][file_key] = {
             "username": username,
@@ -439,11 +447,12 @@ if "upload_results" not in st.session_state:
     st.session_state.upload_results = []
 if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
+if "file_uploader_key" not in st.session_state:
+    st.session_state.file_uploader_key = 0
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
 
-# Nếu có yêu cầu refresh, clear cache và load lại
 if st.session_state.force_refresh:
     load_metadata.clear()
     get_github_file.clear()
@@ -526,7 +535,6 @@ if not st.session_state.logged_in:
                             if save_metadata(metadata, db_sha):
                                 st.success("✅ Đăng ký thành công! Vui lòng đăng nhập.")
                                 st.balloons()
-                                # Refresh metadata
                                 load_metadata.clear()
                                 get_github_file.clear()
                             else:
@@ -541,11 +549,9 @@ else:
         st.markdown(f"### 👋 Xin chào, **{st.session_state.username}**")
     
     with col_stats:
-        # Đếm số file
         file_count = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username)
         st.markdown(f"**📊 {file_count}** file đã lưu")
         
-        # Nút refresh
         if st.button("🔄 Làm mới", key="refresh_btn"):
             st.session_state.force_refresh = True
             st.rerun()
@@ -565,16 +571,15 @@ else:
         st.markdown("### 📤 Tải lên nhiều file")
         st.caption(f"*📦 Hỗ trợ mọi định dạng file - Mỗi file tối đa 200MB - Có thể tải nhiều file cùng lúc*")
         
-        # Upload area với giao diện đẹp - hỗ trợ nhiều file
+        # Upload area với key động để reset sau khi upload
         uploaded_files = st.file_uploader(
             "Kéo thả hoặc nhấp để chọn nhiều file",
             label_visibility="collapsed",
             accept_multiple_files=True,
-            key="file_uploader_main"
+            key=f"file_uploader_main_{st.session_state.file_uploader_key}"
         )
         
         if uploaded_files and not st.session_state.upload_in_progress:
-            # Hiển thị danh sách file đã chọn
             st.markdown("#### 📋 Danh sách file đã chọn:")
             
             total_size = 0
@@ -585,7 +590,6 @@ else:
             
             st.markdown(f"**Tổng dung lượng: {format_size(total_size)}**")
             
-            # Kiểm tra dung lượng tổng
             if total_size > 500 * 1024 * 1024:
                 st.warning("⚠️ Tổng dung lượng các file vượt quá 500MB! Vui lòng chọn ít file hơn.")
             
@@ -595,7 +599,6 @@ else:
                     st.session_state.upload_in_progress = True
                     st.session_state.upload_results = []
                     
-                    # Tạo progress bar tổng
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
@@ -603,19 +606,15 @@ else:
                     successful_uploads = 0
                     failed_uploads = 0
                     
-                    # Lấy metadata mới nhất trước khi upload
                     current_metadata, current_db_sha = load_metadata()
                     
-                    # Xử lý từng file
                     for idx, file in enumerate(uploaded_files):
                         status_text.text(f"📤 Đang xử lý file {idx+1}/{total_files}: {file.name}")
                         
-                        # Kiểm tra file trùng
                         file_key = f"{st.session_state.username}_{file.name}"
                         if file_key in current_metadata["files"]:
                             st.warning(f"⚠️ File '{file.name}' đã tồn tại! Sẽ ghi đè file cũ.")
                         
-                        # Upload file
                         result = upload_single_file(
                             file, 
                             st.session_state.username, 
@@ -623,27 +622,21 @@ else:
                             current_db_sha
                         )
                         
-                        # Cập nhật metadata và db_sha sau mỗi lần upload thành công
                         if result["success"]:
                             successful_uploads += 1
-                            current_db_sha = None  # Reset SHA vì đã thay đổi
+                            current_db_sha = None
                             st.toast(f"✅ Đã tải lên: {result['filename']}", icon="✅")
                         else:
                             failed_uploads += 1
                             st.error(f"❌ Lỗi tải file '{result['filename']}': {result.get('error', 'Lỗi không xác định')}")
                         
                         st.session_state.upload_results.append(result)
-                        
-                        # Cập nhật progress
                         progress_bar.progress((idx + 1) / total_files)
                     
-                    # Hoàn thành
                     progress_bar.empty()
                     status_text.empty()
                     
-                    # Hiển thị kết quả tổng hợp
                     st.markdown("### 📊 Kết quả tải lên:")
-                    
                     col_success, col_failed = st.columns(2)
                     with col_success:
                         st.success(f"✅ Thành công: {successful_uploads}/{total_files} file")
@@ -653,7 +646,6 @@ else:
                         else:
                             st.info("🎉 Tất cả file đều tải lên thành công!")
                     
-                    # Hiển thị chi tiết kết quả
                     if st.session_state.upload_results:
                         with st.expander("📝 Xem chi tiết kết quả từng file"):
                             for result in st.session_state.upload_results:
@@ -664,8 +656,8 @@ else:
                     
                     st.session_state.upload_in_progress = False
                     st.session_state.force_refresh = True
+                    st.session_state.file_uploader_key += 1  # Tăng key để reset file_uploader
                     
-                    # Refresh để hiển thị file mới
                     time.sleep(1)
                     st.rerun()
             
@@ -679,7 +671,6 @@ else:
     # --- DANH SÁCH FILE ĐÃ LƯU ---
     st.markdown("### 📂 Kho lưu trữ của bạn")
     
-    # Lọc file của user hiện tại
     my_files = [v for k, v in metadata["files"].items() if v["username"] == st.session_state.username]
     
     if not my_files:
@@ -692,10 +683,8 @@ else:
             </div>
             """, unsafe_allow_html=True)
     else:
-        # Sắp xếp theo ngày tải lên (mới nhất lên đầu)
         my_files.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
         
-        # Hiển thị file trong card
         for idx, f in enumerate(my_files):
             f_name = f["filename"]
             f_key = f"{st.session_state.username}_{f_name}"
@@ -703,7 +692,6 @@ else:
             f_date = f.get("upload_date", "Chưa có ngày")
             f_type = f.get("file_type", "FILE")
             
-            # Icon theo loại file
             icon = "📄"
             if f_type.lower() in ["jpg", "jpeg", "png", "gif", "webp"]:
                 icon = "🖼️"
@@ -735,41 +723,28 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Nút hành động
                 col_dl, col_del = st.columns([1, 1])
                 
                 with col_dl:
-                    if st.button(f"📥 Tải xuống", key=f"dl_{idx}", use_container_width=True):
+                    if st.button(f"📥 Tải xuống", key=f"dl_{idx}_{st.session_state.file_uploader_key}", use_container_width=True):
                         with st.spinner("⏳ Đang tải và giải nén..."):
-                            full_compressed = bytearray()
-                            download_err = False
+                            file_data, error = download_file(f)
                             
-                            for chunk_path in f["chunks"]:
-                                c_bytes, _ = get_github_file(chunk_path)
-                                if c_bytes:
-                                    full_compressed.extend(c_bytes)
-                                else:
-                                    download_err = True
-                                    break
-                            
-                            if download_err:
-                                st.error("❌ Lỗi tải các mảnh dữ liệu!")
+                            if error:
+                                st.error(f"❌ Lỗi tải file: {error}")
                             else:
-                                try:
-                                    original_data = zlib.decompress(bytes(full_compressed))
-                                    st.download_button(
-                                        label="💾 Lưu file về máy",
-                                        data=original_data,
-                                        file_name=f_name,
-                                        key=f"save_{idx}",
-                                        type="primary",
-                                        use_container_width=True
-                                    )
-                                except Exception as e:
-                                    st.error(f"❌ Lỗi giải nén: {str(e)[:100]}")
+                                st.download_button(
+                                    label="💾 Lưu file về máy",
+                                    data=file_data,
+                                    file_name=f_name,
+                                    key=f"save_{idx}_{st.session_state.file_uploader_key}",
+                                    type="primary",
+                                    use_container_width=True
+                                )
+                                st.success("✅ File đã sẵn sàng để tải xuống!")
                 
                 with col_del:
-                    if st.button(f"🗑️ Xóa", key=f"del_{idx}", use_container_width=True):
+                    if st.button(f"🗑️ Xóa", key=f"del_{idx}_{st.session_state.file_uploader_key}", use_container_width=True):
                         with st.spinner("⏳ Đang xóa..."):
                             delete_success = True
                             for chunk_path in f["chunks"]:
