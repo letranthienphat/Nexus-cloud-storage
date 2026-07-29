@@ -240,7 +240,7 @@ def api_call_with_retry(func, *args, **kwargs):
     return None
 
 # --- CÁC HÀM XỬ LÝ LƯU TRỮ VỚI GITHUB ---
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=5)  # Giảm TTL để refresh nhanh hơn
 def get_github_file(path: str) -> Tuple[Optional[bytes], Optional[str]]:
     """Đọc dữ liệu từ một file trên GitHub với cache"""
     try:
@@ -293,7 +293,7 @@ def delete_github_file(path: str, sha: str, message: str = "Delete") -> bool:
         return False
 
 # --- CƠ CHẾ ĐỒNG BỘ CƠ SỞ DỮ LIỆU ---
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)  # Giảm TTL để refresh nhanh hơn
 def load_metadata() -> Tuple[Dict, Optional[str]]:
     """Tải thông tin người dùng và file từ storage/data.json"""
     file_bytes, sha = get_github_file("storage/data.json")
@@ -320,7 +320,12 @@ def save_metadata(metadata: Dict, sha: Optional[str]) -> bool:
     """Cập nhật metadata lên GitHub"""
     try:
         content_bytes = json.dumps(metadata, indent=4, ensure_ascii=False).encode('utf-8')
-        return save_github_file("storage/data.json", content_bytes, sha, "Cập nhật metadata hệ thống")
+        result = save_github_file("storage/data.json", content_bytes, sha, "Cập nhật metadata hệ thống")
+        if result:
+            # Clear cache sau khi lưu thành công
+            load_metadata.clear()
+            get_github_file.clear()
+        return result
     except Exception as e:
         st.error(f"❌ Lỗi lưu metadata: {str(e)[:100]}")
         return False
@@ -432,9 +437,18 @@ if "upload_in_progress" not in st.session_state:
     st.session_state.upload_in_progress = False
 if "upload_results" not in st.session_state:
     st.session_state.upload_results = []
+if "force_refresh" not in st.session_state:
+    st.session_state.force_refresh = False
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
+
+# Nếu có yêu cầu refresh, clear cache và load lại
+if st.session_state.force_refresh:
+    load_metadata.clear()
+    get_github_file.clear()
+    metadata, db_sha = load_metadata()
+    st.session_state.force_refresh = False
 
 # --- XỬ LÝ AUTO LOGIN ---
 if not st.session_state.logged_in:
@@ -512,6 +526,9 @@ if not st.session_state.logged_in:
                             if save_metadata(metadata, db_sha):
                                 st.success("✅ Đăng ký thành công! Vui lòng đăng nhập.")
                                 st.balloons()
+                                # Refresh metadata
+                                load_metadata.clear()
+                                get_github_file.clear()
                             else:
                                 st.error("❌ Lỗi đồng bộ dữ liệu với GitHub!")
 
@@ -527,6 +544,11 @@ else:
         # Đếm số file
         file_count = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username)
         st.markdown(f"**📊 {file_count}** file đã lưu")
+        
+        # Nút refresh
+        if st.button("🔄 Làm mới", key="refresh_btn"):
+            st.session_state.force_refresh = True
+            st.rerun()
     
     with col_logout:
         if st.button("🚪 Đăng xuất", use_container_width=True, type="primary"):
@@ -581,28 +603,30 @@ else:
                     successful_uploads = 0
                     failed_uploads = 0
                     
+                    # Lấy metadata mới nhất trước khi upload
+                    current_metadata, current_db_sha = load_metadata()
+                    
                     # Xử lý từng file
                     for idx, file in enumerate(uploaded_files):
                         status_text.text(f"📤 Đang xử lý file {idx+1}/{total_files}: {file.name}")
                         
                         # Kiểm tra file trùng
                         file_key = f"{st.session_state.username}_{file.name}"
-                        if file_key in metadata["files"]:
+                        if file_key in current_metadata["files"]:
                             st.warning(f"⚠️ File '{file.name}' đã tồn tại! Sẽ ghi đè file cũ.")
                         
                         # Upload file
                         result = upload_single_file(
                             file, 
                             st.session_state.username, 
-                            metadata, 
-                            db_sha
+                            current_metadata, 
+                            current_db_sha
                         )
                         
                         # Cập nhật metadata và db_sha sau mỗi lần upload thành công
                         if result["success"]:
                             successful_uploads += 1
-                            # Lưu metadata mới
-                            db_sha = None  # Reset SHA vì đã thay đổi
+                            current_db_sha = None  # Reset SHA vì đã thay đổi
                             st.toast(f"✅ Đã tải lên: {result['filename']}", icon="✅")
                         else:
                             failed_uploads += 1
@@ -639,9 +663,9 @@ else:
                                     st.error(f"❌ {result['filename']} - {result.get('error', 'Lỗi không xác định')}")
                     
                     st.session_state.upload_in_progress = False
+                    st.session_state.force_refresh = True
                     
-                    # Reload metadata mới
-                    metadata, db_sha = load_metadata()
+                    # Refresh để hiển thị file mới
                     time.sleep(1)
                     st.rerun()
             
@@ -758,6 +782,7 @@ else:
                                 del metadata["files"][f_key]
                                 if save_metadata(metadata, db_sha):
                                     st.toast(f"✅ Đã xóa '{f_name}'", icon="🗑️")
+                                    st.session_state.force_refresh = True
                                     time.sleep(0.5)
                                     st.rerun()
                                 else:
