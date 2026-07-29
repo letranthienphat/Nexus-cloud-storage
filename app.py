@@ -13,6 +13,9 @@ import zipfile
 import io
 import tempfile
 from pathlib import Path
+import uuid
+import platform
+import getpass
 
 # --- CẤU HÌNH HỆ THỐNG ---
 GITHUB_USER = "letranthienphat"
@@ -247,6 +250,38 @@ st.markdown("""
         font-family: 'Courier New', monospace;
     }
     
+    /* Status message */
+    .status-container {
+        padding: 0.5rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 8px;
+        background: #f0f2ff;
+        border-left: 4px solid #667eea;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .status-container .spinner {
+        animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    
+    /* Device info */
+    .device-info {
+        font-size: 0.8rem;
+        color: #6c757d;
+        background: #f8f9fa;
+        padding: 0.25rem 0.75rem;
+        border-radius: 12px;
+        display: inline-block;
+        margin-top: 0.25rem;
+    }
+    
     /* Responsive */
     @media (max-width: 768px) {
         .app-header h1 {
@@ -312,9 +347,43 @@ st.markdown("""
         .code-preview {
             background: #0d0d1a;
         }
+        .status-container {
+            background: #1a1a2e;
+            border-left-color: #667eea;
+        }
+        .device-info {
+            background: #1a1a2e;
+            color: #a0a0b0;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
+
+# --- HÀM LẤY DEVICE ID ---
+def get_device_id() -> str:
+    """Tạo hoặc lấy Device ID duy nhất cho thiết bị"""
+    try:
+        # Kết hợp nhiều thông tin để tạo ID duy nhất
+        system_info = f"{platform.system()}_{platform.node()}_{platform.machine()}"
+        user_info = getpass.getuser()
+        
+        # Tạo hash từ thông tin hệ thống
+        unique_string = f"{system_info}_{user_info}"
+        device_hash = hashlib.sha256(unique_string.encode()).hexdigest()[:16]
+        
+        # Thử lấy từ session state trước
+        if "device_id" in st.session_state:
+            return st.session_state.device_id
+        
+        # Tạo device ID mới
+        device_id = f"DEV_{device_hash}_{uuid.uuid4().hex[:8]}"
+        st.session_state.device_id = device_id
+        return device_id
+    except:
+        # Fallback: tạo UUID ngẫu nhiên
+        device_id = f"DEV_{uuid.uuid4().hex[:16]}"
+        st.session_state.device_id = device_id
+        return device_id
 
 # --- HÀM XỬ LÝ RETRY ---
 def api_call_with_retry(func, *args, **kwargs):
@@ -385,11 +454,13 @@ def load_metadata() -> Tuple[Dict, Optional[str]]:
                 data["files"] = {}
             if "folders" not in data:
                 data["folders"] = {}
+            if "devices" not in data:
+                data["devices"] = {}
             return data, sha
         except:
             pass
     
-    default_data = {"users": {}, "files": {}, "folders": {}}
+    default_data = {"users": {}, "files": {}, "folders": {}, "devices": {}}
     content_bytes = json.dumps(default_data, indent=4, ensure_ascii=False).encode('utf-8')
     if save_github_file("storage/data.json", content_bytes, None, "Khởi tạo dữ liệu hệ thống"):
         return default_data, None
@@ -515,7 +586,6 @@ def create_zip_from_files(files: List[Dict]) -> Optional[bytes]:
             for file_info in files:
                 file_data = download_file(file_info)
                 if file_data:
-                    # Lấy tên file và đường dẫn tương đối
                     filename = file_info["filename"]
                     folder_path = file_info.get("folder_path", "")
                     if folder_path:
@@ -598,7 +668,7 @@ def get_subfolders(metadata: Dict, username: str, folder_path: str) -> List[str]
     return sorted(list(subfolders))
 
 # --- DELETE FOLDER ---
-def delete_folder(metadata: Dict, username: str, folder_path: str, db_sha: str) -> bool:
+def delete_folder(metadata: Dict, username: str, folder_path: str, db_sha: str) -> Tuple[bool, int]:
     """Xóa một thư mục và tất cả file bên trong"""
     normalized_folder = normalize_path(folder_path)
     files_to_delete = []
@@ -613,67 +683,55 @@ def delete_folder(metadata: Dict, username: str, folder_path: str, db_sha: str) 
             files_to_delete.append(file_key)
     
     if not files_to_delete:
-        st.warning("⚠️ Thư mục trống hoặc không tồn tại!")
-        return False
+        return False, 0
     
     success_count = 0
-    with st.spinner(f"🗑️ Đang xóa {len(files_to_delete)} file..."):
-        for file_key in files_to_delete:
-            file_info = metadata["files"][file_key]
-            
-            for chunk_path in file_info["chunks"]:
-                _, c_sha = get_github_file(chunk_path)
-                if c_sha:
-                    delete_github_file(chunk_path, c_sha)
-            
-            del metadata["files"][file_key]
-            success_count += 1
+    for file_key in files_to_delete:
+        file_info = metadata["files"][file_key]
         
-        if success_count > 0:
-            save_metadata(metadata, db_sha)
-            st.success(f"✅ Đã xóa thư mục '{get_folder_name(folder_path)}' và {success_count} file!")
-            return True
+        for chunk_path in file_info["chunks"]:
+            _, c_sha = get_github_file(chunk_path)
+            if c_sha:
+                if delete_github_file(chunk_path, c_sha):
+                    success_count += 1
+        
+        del metadata["files"][file_key]
     
-    return False
+    if success_count > 0:
+        save_metadata(metadata, db_sha)
+        return True, success_count
+    
+    return False, 0
 
 # --- CREATE FOLDER ---
-def create_folder(metadata: Dict, username: str, folder_path: str, folder_name: str, db_sha: str) -> bool:
+def create_folder(metadata: Dict, username: str, folder_path: str, folder_name: str, db_sha: str) -> Tuple[bool, str]:
     """Tạo một thư mục mới"""
-    # Kiểm tra tên thư mục hợp lệ
     if not folder_name or folder_name == "":
-        st.error("❌ Tên thư mục không được để trống!")
-        return False
+        return False, "Tên thư mục không được để trống!"
     
-    # Kiểm tra tên thư mục không chứa ký tự đặc biệt
     invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
     for char in invalid_chars:
         if char in folder_name:
-            st.error(f"❌ Tên thư mục không được chứa ký tự: {char}")
-            return False
+            return False, f"Tên thư mục không được chứa ký tự: {char}"
     
-    # Tạo đường dẫn đầy đủ
     current_path = normalize_path(folder_path)
     if current_path and current_path != "/":
         full_folder_path = f"{current_path}/{folder_name}"
     else:
         full_folder_path = folder_name
     
-    # Kiểm tra thư mục đã tồn tại
     existing_files = get_files_in_folder(metadata, username, full_folder_path)
     if existing_files:
-        st.error("❌ Thư mục đã tồn tại!")
-        return False
+        return False, "Thư mục đã tồn tại!"
     
-    # Tạo một file placeholder trong thư mục để đánh dấu
+    # Tạo placeholder
     placeholder_content = f"Folder created at {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
     placeholder_bytes = placeholder_content.encode('utf-8')
     
-    # Nén placeholder
     compressed_data = zlib.compress(placeholder_bytes, level=9)
     chunk_path = f"storage/{username}_{full_folder_path}/.folder_placeholder.part0"
     
     if save_github_file(chunk_path, compressed_data, None, f"Create folder: {full_folder_path}"):
-        # Thêm vào metadata
         file_key = f"{username}_{full_folder_path}/.folder_placeholder"
         metadata["files"][file_key] = {
             "username": username,
@@ -689,21 +747,17 @@ def create_folder(metadata: Dict, username: str, folder_path: str, folder_name: 
         }
         
         if save_metadata(metadata, db_sha):
-            st.success(f"✅ Đã tạo thư mục '{folder_name}' thành công!")
-            return True
+            return True, f"Đã tạo thư mục '{folder_name}' thành công!"
     
-    st.error("❌ Lỗi tạo thư mục!")
-    return False
+    return False, "Lỗi tạo thư mục!"
 
 # --- UPLOAD MULTIPLE FILES ---
-def upload_multiple_files(files: List, current_path: str, username: str, metadata: Dict, db_sha: str) -> Tuple[bool, int, int]:
-    """Tải nhiều file lên cùng lúc"""
+def upload_multiple_files(files: List, current_path: str, username: str, metadata: Dict, db_sha: str, progress_callback=None) -> Tuple[bool, int, int, List[str]]:
+    """Tải nhiều file lên cùng lúc với callback progress"""
     success_count = 0
     fail_count = 0
+    errors = []
     total_files = len(files)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     
     for idx, uploaded_file in enumerate(files):
         try:
@@ -712,9 +766,10 @@ def upload_multiple_files(files: List, current_path: str, username: str, metadat
             file_size = len(raw_data)
             
             if file_size > MAX_FILE_SIZE:
-                st.warning(f"⚠️ File '{file_name}' vượt quá 200MB, bỏ qua!")
+                errors.append(f"File '{file_name}' vượt quá 200MB")
                 fail_count += 1
-                progress_bar.progress((idx + 1) / total_files)
+                if progress_callback:
+                    progress_callback(idx + 1, total_files, file_name, "skip")
                 continue
             
             if current_path and current_path != "/":
@@ -729,7 +784,8 @@ def upload_multiple_files(files: List, current_path: str, username: str, metadat
             chunk_paths = []
             upload_success = True
             
-            status_text.text(f"📤 Đang tải: {file_name} ({idx+1}/{total_files})")
+            if progress_callback:
+                progress_callback(idx + 1, total_files, file_name, "uploading")
             
             for i in range(total_chunks):
                 start = i * chunk_size
@@ -760,25 +816,24 @@ def upload_multiple_files(files: List, current_path: str, username: str, metadat
                 }
                 success_count += 1
             else:
+                errors.append(f"Lỗi tải file '{file_name}'")
                 fail_count += 1
                 
         except Exception as e:
-            st.error(f"❌ Lỗi tải file {uploaded_file.name}: {str(e)[:100]}")
+            errors.append(f"Lỗi tải file {uploaded_file.name}: {str(e)[:100]}")
             fail_count += 1
         
-        progress_bar.progress((idx + 1) / total_files)
+        if progress_callback:
+            progress_callback(idx + 1, total_files, None, "done")
     
     if success_count > 0:
         save_metadata(metadata, db_sha)
     
-    progress_bar.empty()
-    status_text.empty()
-    
-    return success_count > 0, success_count, fail_count
+    return success_count > 0, success_count, fail_count, errors
 
 # --- UPLOAD FOLDER (Zip) ---
-def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata: Dict, db_sha: str) -> Tuple[bool, int, int]:
-    """Tải thư mục từ file ZIP"""
+def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata: Dict, db_sha: str, progress_callback=None) -> Tuple[bool, int, int, List[str]]:
+    """Tải thư mục từ file ZIP với callback progress"""
     try:
         zip_bytes = zip_file.read()
         zip_buffer = io.BytesIO(zip_bytes)
@@ -797,19 +852,14 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
                             'data': file_data,
                             'size': file_size
                         })
-                    else:
-                        st.warning(f"⚠️ File '{file_info.filename}' vượt quá 200MB, bỏ qua!")
         
         if not file_list:
-            st.warning("⚠️ Không có file hợp lệ trong thư mục!")
-            return False, 0, 0
+            return False, 0, 0, ["Không có file hợp lệ trong thư mục!"]
         
         success_count = 0
         fail_count = 0
+        errors = []
         total_files = len(file_list)
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
         
         for idx, file_info in enumerate(file_list):
             try:
@@ -829,7 +879,8 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
                 chunk_paths = []
                 upload_success = True
                 
-                status_text.text(f"📤 Đang tải: {relative_path} ({idx+1}/{total_files})")
+                if progress_callback:
+                    progress_callback(idx + 1, total_files, relative_path, "uploading")
                 
                 for i in range(total_chunks):
                     start = i * chunk_size
@@ -860,25 +911,23 @@ def upload_folder_from_zip(zip_file, current_path: str, username: str, metadata:
                     }
                     success_count += 1
                 else:
+                    errors.append(f"Lỗi tải file '{relative_path}'")
                     fail_count += 1
                     
             except Exception as e:
-                st.error(f"❌ Lỗi tải file: {str(e)[:100]}")
+                errors.append(f"Lỗi tải file: {str(e)[:100]}")
                 fail_count += 1
             
-            progress_bar.progress((idx + 1) / total_files)
+            if progress_callback:
+                progress_callback(idx + 1, total_files, None, "done")
         
         if success_count > 0:
             save_metadata(metadata, db_sha)
         
-        progress_bar.empty()
-        status_text.empty()
-        
-        return success_count > 0, success_count, fail_count
+        return success_count > 0, success_count, fail_count, errors
         
     except Exception as e:
-        st.error(f"❌ Lỗi xử lý thư mục: {str(e)[:100]}")
-        return False, 0, 0
+        return False, 0, 0, [f"Lỗi xử lý thư mục: {str(e)[:100]}"]
 
 # --- RENDER FOLDER VIEW ---
 def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha: str):
@@ -915,8 +964,14 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
         with col_btn:
             if st.button("➕ Tạo", use_container_width=True):
                 if new_folder_name:
-                    if create_folder(metadata, username, current_path, new_folder_name, db_sha):
-                        st.rerun()
+                    with st.spinner("⏳ Đang tạo thư mục..."):
+                        success, message = create_folder(metadata, username, current_path, new_folder_name, db_sha)
+                        if success:
+                            st.success(f"✅ {message}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
                 else:
                     st.warning("⚠️ Vui lòng nhập tên thư mục!")
     
@@ -976,8 +1031,14 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
                                     st.warning("⚠️ Thư mục trống!")
                     with col_delete:
                         if st.button("🗑️", key=f"del_folder_{folder_path}", help="Xóa thư mục", use_container_width=True):
-                            if delete_folder(metadata, username, folder_path, db_sha):
-                                st.rerun()
+                            with st.spinner("⏳ Đang xóa thư mục..."):
+                                success, count = delete_folder(metadata, username, folder_path, db_sha)
+                                if success:
+                                    st.success(f"✅ Đã xóa thư mục '{folder_name}' và {count} file!")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Lỗi xóa thư mục!")
     
     # Hiển thị file
     if files:
@@ -991,7 +1052,6 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
             f_type = f.get("file_type", "UNKNOWN")
             is_placeholder = f.get("is_placeholder", False)
             
-            # Bỏ qua placeholder
             if is_placeholder:
                 continue
             
@@ -1016,7 +1076,6 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
                 with col_actions:
                     col_dl, col_dl_zip, col_del = st.columns(3)
                     
-                    # Tải xuống trực tiếp
                     with col_dl:
                         if st.button("📥 DL", key=f"dl_{idx}_{f_key}", help="Tải xuống file", use_container_width=True):
                             with st.spinner("⏳ Đang tải..."):
@@ -1033,7 +1092,6 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
                                 else:
                                     st.error("❌ Lỗi tải file!")
                     
-                    # Tải xuống dạng ZIP
                     with col_dl_zip:
                         if st.button("📦 ZIP", key=f"dl_zip_{idx}_{f_key}", help="Tải xuống file dạng ZIP", use_container_width=True):
                             with st.spinner("⏳ Đang tạo ZIP..."):
@@ -1055,21 +1113,24 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
                                 else:
                                     st.error("❌ Lỗi tạo ZIP!")
                     
-                    # Xóa file
                     with col_del:
                         if st.button("🗑️", key=f"del_{idx}_{f_key}", help="Xóa file", use_container_width=True):
-                            delete_success = True
-                            for chunk_path in f["chunks"]:
-                                _, c_sha = get_github_file(chunk_path)
-                                if c_sha:
-                                    if not delete_github_file(chunk_path, c_sha):
-                                        delete_success = False
-                            
-                            if delete_success:
-                                del metadata["files"][f_key]
-                                if save_metadata(metadata, db_sha):
-                                    st.toast(f"✅ Đã xóa '{f_name}'", icon="🗑️")
-                                    st.rerun()
+                            with st.spinner("⏳ Đang xóa file..."):
+                                delete_success = True
+                                for chunk_path in f["chunks"]:
+                                    _, c_sha = get_github_file(chunk_path)
+                                    if c_sha:
+                                        if not delete_github_file(chunk_path, c_sha):
+                                            delete_success = False
+                                
+                                if delete_success:
+                                    del metadata["files"][f_key]
+                                    if save_metadata(metadata, db_sha):
+                                        st.success(f"✅ Đã xóa '{f_name}'")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                else:
+                                    st.error("❌ Lỗi xóa file!")
     
     # --- PREVIEW FILE ---
     if hasattr(st.session_state, 'preview_file') and st.session_state.preview_file:
@@ -1123,7 +1184,6 @@ def render_folder_view(metadata: Dict, username: str, current_path: str, db_sha:
                     elif is_text_file(f_name):
                         try:
                             text_content = file_data.decode('utf-8')
-                            # Giới hạn hiển thị để tránh quá tải
                             if len(text_content) > 100000:
                                 text_content = text_content[:100000] + "\n\n... (File quá lớn, chỉ hiển thị 100KB đầu)"
                             st.markdown(f'<div class="text-preview">{text_content}</div>', unsafe_allow_html=True)
@@ -1161,11 +1221,26 @@ if "current_path" not in st.session_state:
     st.session_state.current_path = "/"
 if "preview_file" not in st.session_state:
     st.session_state.preview_file = None
+if "device_id" not in st.session_state:
+    st.session_state.device_id = get_device_id()
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
 
-# --- XỬ LÝ AUTO LOGIN ---
+# --- XỬ LÝ AUTO LOGIN BẰNG DEVICE ID ---
+if not st.session_state.logged_in:
+    device_id = st.session_state.device_id
+    
+    # Kiểm tra trong metadata["devices"] có device_id này không
+    if "devices" in metadata and device_id in metadata["devices"]:
+        saved_username = metadata["devices"][device_id]
+        # Kiểm tra user có tồn tại không
+        if saved_username in metadata["users"]:
+            st.session_state.logged_in = True
+            st.session_state.username = saved_username
+            st.rerun()
+
+# --- XỬ LÝ AUTO LOGIN BẰNG QUERY PARAMS (Fallback) ---
 if not st.session_state.logged_in:
     query_params = st.query_params
     if "auto_user" in query_params and "auto_hash" in query_params:
@@ -1188,10 +1263,14 @@ if not st.session_state.logged_in:
             st.markdown("### Chào mừng trở lại! 👋")
             st.caption("Đăng nhập để truy cập kho lưu trữ của bạn")
             
+            # Hiển thị Device ID
+            st.markdown(f'<div class="device-info">🔑 Device ID: {st.session_state.device_id[:16]}...</div>', unsafe_allow_html=True)
+            st.caption("💡 Đăng nhập một lần sẽ tự động ghi nhớ thiết bị này")
+            
             with st.form("login_form", clear_on_submit=False):
                 user_in = st.text_input("Tên đăng nhập", placeholder="Nhập tên đăng nhập")
                 pass_in = st.text_input("Mật khẩu", type="password", placeholder="Nhập mật khẩu")
-                remember_me = st.checkbox("🔒 Ghi nhớ đăng nhập", value=True)
+                remember_device = st.checkbox("🔒 Ghi nhớ thiết bị này", value=True, help="Tự động đăng nhập lần sau mà không cần mật khẩu")
                 
                 submitted = st.form_submit_button("🔑 Đăng nhập", use_container_width=True)
                 
@@ -1201,12 +1280,18 @@ if not st.session_state.logged_in:
                     elif user_in in metadata["users"] and metadata["users"][user_in] == pass_in:
                         st.session_state.logged_in = True
                         st.session_state.username = user_in
-                        st.session_state.remember_me = remember_me
                         
-                        if remember_me:
-                            password_hash = hash_password(pass_in)
-                            st.query_params["auto_user"] = user_in
-                            st.query_params["auto_hash"] = password_hash
+                        # Lưu Device ID vào metadata
+                        if remember_device:
+                            if "devices" not in metadata:
+                                metadata["devices"] = {}
+                            metadata["devices"][st.session_state.device_id] = user_in
+                            save_metadata(metadata, db_sha)
+                        
+                        # Lưu cookie (fallback)
+                        password_hash = hash_password(pass_in)
+                        st.query_params["auto_user"] = user_in
+                        st.query_params["auto_hash"] = password_hash
                         
                         st.success("✅ Đăng nhập thành công!")
                         time.sleep(0.5)
@@ -1218,6 +1303,8 @@ if not st.session_state.logged_in:
         with st.container():
             st.markdown("### Tạo tài khoản mới 🚀")
             st.caption("Đăng ký miễn phí để bắt đầu lưu trữ file của bạn")
+            
+            st.markdown(f'<div class="device-info">🔑 Device ID: {st.session_state.device_id[:16]}...</div>', unsafe_allow_html=True)
             
             with st.form("register_form", clear_on_submit=False):
                 new_u = st.text_input("Tên đăng nhập", placeholder="Chọn tên đăng nhập")
@@ -1238,9 +1325,19 @@ if not st.session_state.logged_in:
                     else:
                         with st.spinner("⏳ Đang đăng ký..."):
                             metadata["users"][new_u] = new_p
+                            
+                            # Tự động lưu device ID khi đăng ký
+                            if "devices" not in metadata:
+                                metadata["devices"] = {}
+                            metadata["devices"][st.session_state.device_id] = new_u
+                            
                             if save_metadata(metadata, db_sha):
-                                st.success("✅ Đăng ký thành công! Vui lòng đăng nhập.")
+                                st.success("✅ Đăng ký thành công! Đang tự động đăng nhập...")
+                                st.session_state.logged_in = True
+                                st.session_state.username = new_u
                                 st.balloons()
+                                time.sleep(1)
+                                st.rerun()
                             else:
                                 st.error("❌ Lỗi đồng bộ dữ liệu với GitHub!")
 
@@ -1251,6 +1348,7 @@ else:
     
     with col_user:
         st.markdown(f"### 👋 Xin chào, **{st.session_state.username}**")
+        st.markdown(f'<div class="device-info">🔑 Device: {st.session_state.device_id[:16]}...</div>', unsafe_allow_html=True)
     
     with col_stats:
         total_files = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username and not v.get("is_placeholder", False))
@@ -1264,6 +1362,12 @@ else:
             st.session_state.remember_me = False
             st.session_state.current_path = "/"
             st.session_state.preview_file = None
+            
+            # Xóa device ID khỏi metadata (tùy chọn)
+            if "devices" in metadata and st.session_state.device_id in metadata["devices"]:
+                del metadata["devices"][st.session_state.device_id]
+                save_metadata(metadata, db_sha)
+            
             st.query_params.clear()
             st.rerun()
     
@@ -1300,14 +1404,38 @@ else:
             if uploaded_files and not st.session_state.upload_in_progress:
                 if st.button("🚀 Tải lên các file đã chọn", use_container_width=True, type="primary"):
                     st.session_state.upload_in_progress = True
-                    success, success_count, fail_count = upload_multiple_files(
-                        uploaded_files, current_path, st.session_state.username, metadata, db_sha
+                    
+                    # Tạo progress container
+                    progress_container = st.container()
+                    with progress_container:
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        file_status = st.empty()
+                        
+                        def update_progress(current, total, filename, status):
+                            progress_bar.progress(current / total)
+                            if filename:
+                                file_status.info(f"📤 Đang tải: {filename} ({current}/{total})")
+                            if status == "done":
+                                status_text.success(f"✅ Hoàn thành {current}/{total} file")
+                            elif status == "skip":
+                                status_text.warning(f"⚠️ Bỏ qua file: {filename}")
+                    
+                    success, success_count, fail_count, errors = upload_multiple_files(
+                        uploaded_files, current_path, st.session_state.username, metadata, db_sha,
+                        progress_callback=update_progress
                     )
+                    
+                    progress_container.empty()
                     
                     if success:
                         st.success(f"✅ Tải lên thành công {success_count} file!")
                         if fail_count > 0:
                             st.warning(f"⚠️ {fail_count} file bị bỏ qua do lỗi hoặc vượt quá 200MB")
+                            for err in errors[:5]:  # Hiển thị tối đa 5 lỗi
+                                st.caption(f"• {err}")
+                            if len(errors) > 5:
+                                st.caption(f"... và {len(errors) - 5} lỗi khác")
                         st.balloons()
                     else:
                         st.error("❌ Lỗi khi tải lên!")
@@ -1319,14 +1447,35 @@ else:
             if uploaded_zip and not st.session_state.upload_in_progress:
                 if st.button("📁 Tải lên thư mục", use_container_width=True, type="primary"):
                     st.session_state.upload_in_progress = True
-                    success, success_count, fail_count = upload_folder_from_zip(
-                        uploaded_zip, current_path, st.session_state.username, metadata, db_sha
+                    
+                    progress_container = st.container()
+                    with progress_container:
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        file_status = st.empty()
+                        
+                        def update_progress(current, total, filename, status):
+                            progress_bar.progress(current / total)
+                            if filename:
+                                file_status.info(f"📤 Đang tải: {filename} ({current}/{total})")
+                            if status == "done":
+                                status_text.success(f"✅ Hoàn thành {current}/{total} file")
+                    
+                    success, success_count, fail_count, errors = upload_folder_from_zip(
+                        uploaded_zip, current_path, st.session_state.username, metadata, db_sha,
+                        progress_callback=update_progress
                     )
+                    
+                    progress_container.empty()
                     
                     if success:
                         st.success(f"✅ Tải lên thư mục thành công! {success_count} file")
                         if fail_count > 0:
                             st.warning(f"⚠️ {fail_count} file bị bỏ qua do vượt quá 200MB")
+                            for err in errors[:5]:
+                                st.caption(f"• {err}")
+                            if len(errors) > 5:
+                                st.caption(f"... và {len(errors) - 5} lỗi khác")
                         st.balloons()
                     else:
                         st.error("❌ Lỗi khi tải lên thư mục!")
@@ -1347,6 +1496,7 @@ else:
         <p>🔒 Bảo mật tuyệt đối • 🚀 Tốc độ cao • ☁️ Lưu trữ mãi mãi</p>
         <p>📁 Hỗ trợ tải lên nhiều file và thư mục • 💾 Mỗi file tối đa 200MB</p>
         <p>👁️ Xem trước ảnh, video, audio, text, code • 📦 Tải xuống dạng ZIP</p>
+        <p>🔑 Tự động đăng nhập bằng Device ID • 📱 Ghi nhớ thiết bị</p>
         <p>© 2026 Nexus Cloud Storage • Powered by GitHub</p>
     </div>
     """, unsafe_allow_html=True)
