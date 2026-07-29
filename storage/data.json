@@ -2,7 +2,19 @@
     "users": {
         "Phát": "Tp27111510"
     },
-    "files": {},
+    "files": {
+        "Phát_introduce.mp4": {
+            "username": "Phát",
+            "filename": "introduce.mp4",
+            "total_chunks": 1,
+            "chunks": [
+                "storage/Phát_introduce.mp4.part0"
+            ],
+            "size": 2527506,
+            "upload_date": "29/07/2026 09:01",
+            "file_type": "MP4"
+        }
+    },
     "folders": {},
     "devices": {}
 }
