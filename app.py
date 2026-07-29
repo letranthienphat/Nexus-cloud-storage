@@ -28,7 +28,7 @@ HEADERS = {
     "Accept": "application/vnd.github.v3+json"
 }
 
-# --- CUSTOM CSS NÂNG CẤP GIAO DIỆN ---
+# --- CUSTOM CSS ---
 st.markdown("""
 <style>
     .main {
@@ -57,22 +57,6 @@ st.markdown("""
         font-size: 1.1rem;
     }
     
-    .custom-card {
-        background: white;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        border: 1px solid #e0e0e0;
-        transition: all 0.3s ease;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
-    
-    .custom-card:hover {
-        box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-        transform: translateY(-2px);
-        border-color: #667eea;
-    }
-    
     .file-item {
         background: white;
         border-radius: 10px;
@@ -99,21 +83,6 @@ st.markdown("""
         font-size: 0.85rem;
     }
     
-    .upload-area {
-        border: 2px dashed #667eea;
-        border-radius: 12px;
-        padding: 2.5rem 1.5rem;
-        text-align: center;
-        background: linear-gradient(135deg, #f8f9ff 0%, #f0f2ff 100%);
-        transition: all 0.3s ease;
-        cursor: pointer;
-    }
-    
-    .upload-area:hover {
-        border-color: #764ba2;
-        background: linear-gradient(135deg, #f0f2ff 0%, #e8ebff 100%);
-    }
-    
     .stButton > button {
         border-radius: 8px;
         font-weight: 600;
@@ -130,31 +99,9 @@ st.markdown("""
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
     }
     
-    .stToast {
-        border-radius: 12px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-    }
-    
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2rem;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        font-weight: 600;
-        padding: 0.5rem 1rem;
-    }
-    
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        color: #667eea;
-        border-bottom: 3px solid #667eea;
-    }
-    
     @media (max-width: 768px) {
         .app-header h1 {
             font-size: 1.8rem;
-        }
-        .custom-card {
-            padding: 1rem;
         }
         .file-item {
             padding: 0.75rem;
@@ -162,22 +109,12 @@ st.markdown("""
     }
     
     @media (prefers-color-scheme: dark) {
-        .custom-card {
-            background: #1a1a2e;
-            border-color: #2a2a4e;
-        }
         .file-item {
             background: #1a1a2e;
             border-left-color: #667eea;
         }
         .file-name {
             color: #e0e0e0;
-        }
-        .upload-area {
-            background: linear-gradient(135deg, #1a1a2e 0%, #2a2a4e 100%);
-        }
-        .upload-area:hover {
-            background: linear-gradient(135deg, #2a2a4e 0%, #3a3a5e 100%);
         }
     }
 </style>
@@ -210,13 +147,8 @@ def get_github_file(path: str) -> Tuple[Optional[bytes], Optional[str]]:
         elif response.status_code == 404:
             return None, None
         else:
-            st.warning(f"⚠️ Lỗi GitHub: {response.status_code}")
             return None, None
-    except requests.exceptions.Timeout:
-        st.warning("⏰ Timeout khi kết nối GitHub, thử lại...")
-        return None, None
     except Exception as e:
-        st.error(f"❌ Lỗi đọc file: {str(e)[:100]}")
         return None, None
 
 def save_github_file(path: str, content_bytes: bytes, sha: Optional[str] = None, message: str = "Update") -> bool:
@@ -230,13 +162,8 @@ def save_github_file(path: str, content_bytes: bytes, sha: Optional[str] = None,
         if response.status_code in [200, 201]:
             return True
         else:
-            st.warning(f"⚠️ Lỗi upload: {response.status_code}")
             return False
-    except requests.exceptions.Timeout:
-        st.warning("⏰ Timeout khi upload, thử lại...")
-        return False
     except Exception as e:
-        st.error(f"❌ Lỗi lưu file: {str(e)[:100]}")
         return False
 
 def delete_github_file(path: str, sha: str, message: str = "Delete") -> bool:
@@ -245,8 +172,27 @@ def delete_github_file(path: str, sha: str, message: str = "Delete") -> bool:
         response = requests.delete(f"{API_URL}/{path}", headers=HEADERS, json=data, timeout=30)
         return response.status_code == 200
     except Exception as e:
-        st.error(f"❌ Lỗi xóa file: {str(e)[:100]}")
         return False
+
+# --- KIỂM TRA FILE TRÊN GITHUB ---
+def check_file_exists(path: str) -> bool:
+    """Kiểm tra file có tồn tại trên GitHub không"""
+    try:
+        response = requests.get(f"{API_URL}/{path}", headers=HEADERS, timeout=30)
+        return response.status_code == 200
+    except:
+        return False
+
+def list_files_in_storage():
+    """Liệt kê tất cả file trong thư mục storage"""
+    try:
+        response = requests.get(f"{API_URL}/storage", headers=HEADERS, timeout=30)
+        if response.status_code == 200:
+            files = response.json()
+            return [f['name'] for f in files if f['type'] == 'file']
+        return []
+    except:
+        return []
 
 # --- CƠ CHẾ ĐỒNG BỘ CƠ SỞ DỮ LIỆU ---
 @st.cache_data(ttl=5)
@@ -295,51 +241,70 @@ def format_size(size_bytes: int) -> str:
     else:
         return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
 
-def download_file(file_info):
-    """Tải và giải nén file từ GitHub với xử lý lỗi tốt hơn"""
+def download_file(file_info, username):
+    """Tải và giải nén file từ GitHub với kiểm tra kỹ lưỡng"""
     try:
         full_compressed = bytearray()
+        missing_chunks = []
         
-        # Đọc từng chunk theo thứ tự
+        # Kiểm tra từng chunk
         for idx, chunk_path in enumerate(file_info["chunks"]):
+            # Kiểm tra chunk có tồn tại không
+            exists = check_file_exists(chunk_path)
+            if not exists:
+                missing_chunks.append({
+                    'index': idx,
+                    'path': chunk_path
+                })
+                continue
+            
             c_bytes, _ = get_github_file(chunk_path)
             if c_bytes is None:
-                return None, f"Không tìm thấy chunk {idx+1}/{len(file_info['chunks'])}: {chunk_path}"
+                missing_chunks.append({
+                    'index': idx,
+                    'path': chunk_path,
+                    'reason': 'Không thể đọc dữ liệu'
+                })
+                continue
             
-            # Kiểm tra dữ liệu chunk
             if len(c_bytes) == 0:
-                return None, f"Chunk {idx+1} bị rỗng"
+                missing_chunks.append({
+                    'index': idx,
+                    'path': chunk_path,
+                    'reason': 'Dữ liệu rỗng'
+                })
+                continue
             
             full_compressed.extend(c_bytes)
         
-        # Kiểm tra tổng dung lượng
-        if len(full_compressed) == 0:
-            return None, "Dữ liệu tải về bị rỗng"
+        # Nếu có chunk bị thiếu
+        if missing_chunks:
+            error_msg = f"Thiếu {len(missing_chunks)} chunk:\n"
+            for chunk in missing_chunks:
+                error_msg += f"- Chunk {chunk['index']+1}: {chunk.get('reason', 'Không tìm thấy')}\n"
+            return None, error_msg, missing_chunks
         
-        # Thử giải nén với nhiều cách
+        # Kiểm tra dữ liệu
+        if len(full_compressed) == 0:
+            return None, "Dữ liệu tải về bị rỗng", []
+        
+        # Thử giải nén
         try:
-            # Cách 1: Giải nén trực tiếp
             original_data = zlib.decompress(bytes(full_compressed))
-            return original_data, None
-        except zlib.error as e1:
-            # Cách 2: Thử với wbits khác
+            return original_data, None, []
+        except zlib.error as e:
+            # Thử với wbits khác
             try:
                 original_data = zlib.decompress(bytes(full_compressed), wbits=zlib.MAX_WBITS)
-                return original_data, None
-            except zlib.error as e2:
-                # Cách 3: Thử với gzip
-                try:
-                    import gzip
-                    original_data = gzip.decompress(bytes(full_compressed))
-                    return original_data, None
-                except Exception as e3:
-                    return None, f"Không thể giải nén dữ liệu. Lỗi: {str(e1)}"
+                return original_data, None, []
+            except:
+                return None, f"Lỗi giải nén: {str(e)}", []
         
     except Exception as e:
-        return None, f"Lỗi không xác định: {str(e)}"
+        return None, f"Lỗi không xác định: {str(e)}", []
 
 def upload_single_file(file_data, username, metadata, db_sha):
-    """Tải lên một file đơn lẻ với kiểm tra dữ liệu"""
+    """Tải lên một file đơn lẻ với kiểm tra kỹ lưỡng"""
     file_name = file_data.name
     raw_data = file_data.read()
     file_size = len(raw_data)
@@ -352,10 +317,9 @@ def upload_single_file(file_data, username, metadata, db_sha):
         }
     
     try:
-        # Nén file với kiểm tra
+        # Nén file
         compressed_data = zlib.compress(raw_data, level=9)
         
-        # Kiểm tra dữ liệu nén
         if len(compressed_data) == 0:
             return {
                 "success": False,
@@ -374,7 +338,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
             end = min(start + chunk_size, len(compressed_data))
             chunk_bytes = compressed_data[start:end]
             
-            # Kiểm tra chunk
             if len(chunk_bytes) == 0:
                 return {
                     "success": False,
@@ -382,15 +345,28 @@ def upload_single_file(file_data, username, metadata, db_sha):
                     "error": f"Chunk {i+1} bị rỗng!"
                 }
             
+            # Tạo tên chunk với định dạng chuẩn
             chunk_filename = f"storage/{username}_{file_name}.part{i}"
-            _, old_sha = get_github_file(chunk_filename)
             
+            # Kiểm tra chunk cũ
+            old_bytes, old_sha = get_github_file(chunk_filename)
+            
+            # Upload chunk
             if not api_call_with_retry(save_github_file, chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}"):
                 return {
                     "success": False,
                     "filename": file_name,
                     "error": f"Lỗi tải chunk {i+1}/{total_chunks}!"
                 }
+            
+            # Xác nhận chunk đã được upload
+            if not check_file_exists(chunk_filename):
+                return {
+                    "success": False,
+                    "filename": file_name,
+                    "error": f"Không thể xác nhận chunk {i+1}!"
+                }
+            
             chunk_paths.append(chunk_filename)
         
         # Lưu metadata
@@ -409,7 +385,8 @@ def upload_single_file(file_data, username, metadata, db_sha):
             return {
                 "success": True,
                 "filename": file_name,
-                "size": file_size
+                "size": file_size,
+                "chunks": total_chunks
             }
         else:
             return {
@@ -557,6 +534,14 @@ else:
         file_count = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username)
         st.markdown(f"**📊 {file_count}** file đã lưu")
         
+        # Nút kiểm tra storage
+        if st.button("🔍 Kiểm tra storage", key="check_storage"):
+            files = list_files_in_storage()
+            st.info(f"📁 Tổng số file trong storage: {len(files)}")
+            with st.expander("📋 Danh sách file trong storage"):
+                for f in files:
+                    st.write(f"- {f}")
+        
         if st.button("🔄 Làm mới", key="refresh_btn"):
             st.session_state.force_refresh = True
             st.rerun()
@@ -629,7 +614,7 @@ else:
                         if result["success"]:
                             successful_uploads += 1
                             current_db_sha = None
-                            st.toast(f"✅ Đã tải lên: {result['filename']}", icon="✅")
+                            st.toast(f"✅ Đã tải lên: {result['filename']} ({result.get('chunks', 0)} chunks)", icon="✅")
                         else:
                             failed_uploads += 1
                             st.error(f"❌ Lỗi tải file '{result['filename']}': {result.get('error', 'Lỗi không xác định')}")
@@ -654,7 +639,7 @@ else:
                         with st.expander("📝 Xem chi tiết kết quả từng file"):
                             for result in st.session_state.upload_results:
                                 if result["success"]:
-                                    st.success(f"✅ {result['filename']} - {format_size(result['size'])}")
+                                    st.success(f"✅ {result['filename']} - {format_size(result['size'])} - {result.get('chunks', 0)} chunks")
                                 else:
                                     st.error(f"❌ {result['filename']} - {result.get('error', 'Lỗi không xác định')}")
                     
@@ -695,6 +680,7 @@ else:
             f_size = f.get("size", 0)
             f_date = f.get("upload_date", "Chưa có ngày")
             f_type = f.get("file_type", "FILE")
+            f_chunks = f.get("total_chunks", 0)
             
             icon = "📄"
             if f_type.lower() in ["jpg", "jpeg", "png", "gif", "webp"]:
@@ -719,7 +705,7 @@ else:
                             <div>
                                 <div class="file-name">{f_name}</div>
                                 <div class="file-meta">
-                                    💾 {format_size(f_size)} • 📅 {f_date}
+                                    💾 {format_size(f_size)} • 📅 {f_date} • 🧩 {f_chunks} chunks
                                 </div>
                             </div>
                         </div>
@@ -732,10 +718,11 @@ else:
                 with col_dl:
                     if st.button(f"📥 Tải xuống", key=f"dl_{idx}_{st.session_state.file_uploader_key}", use_container_width=True):
                         with st.spinner("⏳ Đang tải và giải nén..."):
-                            file_data, error = download_file(f)
+                            file_data, error, missing_chunks = download_file(f, st.session_state.username)
                             
                             if error:
                                 st.error(f"❌ Lỗi tải file: {error}")
+                                
                                 # Hiển thị thông tin debug
                                 with st.expander("🔍 Thông tin debug"):
                                     st.write("**Thông tin file:**")
@@ -744,16 +731,23 @@ else:
                                     st.write(f"- Dung lượng: {format_size(f_size)}")
                                     st.write("**Danh sách chunk:**")
                                     for i, chunk_path in enumerate(f['chunks']):
-                                        chunk_data, _ = get_github_file(chunk_path)
-                                        if chunk_data:
-                                            st.write(f"- Chunk {i+1}: {format_size(len(chunk_data))}")
+                                        exists = check_file_exists(chunk_path)
+                                        if exists:
+                                            chunk_data, _ = get_github_file(chunk_path)
+                                            if chunk_data:
+                                                st.write(f"- Chunk {i+1}: ✅ {format_size(len(chunk_data))}")
+                                            else:
+                                                st.write(f"- Chunk {i+1}: ⚠️ Tồn tại nhưng không đọc được")
                                         else:
                                             st.write(f"- Chunk {i+1}: ❌ Không tìm thấy")
+                                    
+                                    # Hiển thị tất cả file trong storage
+                                    st.write("**Tất cả file trong storage:**")
+                                    all_files = list_files_in_storage()
+                                    for file in all_files:
+                                        if file.startswith(f"{st.session_state.username}_"):
+                                            st.write(f"- {file}")
                             else:
-                                # Lưu file vào session state để download
-                                st.session_state.download_data = file_data
-                                st.session_state.download_filename = f_name
-                                
                                 st.download_button(
                                     label="💾 Lưu file về máy",
                                     data=file_data,
