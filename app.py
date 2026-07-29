@@ -7,7 +7,7 @@ import math
 from datetime import datetime
 import hashlib
 import time
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 # --- CẤU HÌNH HỆ THỐNG ---
 GITHUB_USER = "letranthienphat"
@@ -160,6 +160,31 @@ st.markdown("""
     .stTabs [data-baseweb="tab"][aria-selected="true"] {
         color: #667eea;
         border-bottom: 3px solid #667eea;
+    }
+    
+    /* Upload status */
+    .upload-status {
+        padding: 0.75rem;
+        border-radius: 8px;
+        margin: 0.5rem 0;
+    }
+    
+    .upload-status.success {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+    }
+    
+    .upload-status.error {
+        background: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+    }
+    
+    .upload-status.pending {
+        background: #fff3cd;
+        border: 1px solid #ffeaa7;
+        color: #856404;
     }
     
     /* Responsive */
@@ -316,6 +341,78 @@ def format_size(size_bytes: int) -> str:
     else:
         return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
 
+def upload_single_file(file_data, username, metadata, db_sha):
+    """Tải lên một file đơn lẻ"""
+    file_name = file_data.name
+    raw_data = file_data.read()
+    file_size = len(raw_data)
+    
+    if file_size > 200 * 1024 * 1024:
+        return {
+            "success": False,
+            "filename": file_name,
+            "error": "File vượt quá giới hạn 200MB!"
+        }
+    
+    try:
+        # Nén file
+        compressed_data = zlib.compress(raw_data, level=9)
+        
+        # Chia nhỏ file
+        chunk_size = 45 * 1024 * 1024
+        total_chunks = math.ceil(len(compressed_data) / chunk_size)
+        
+        chunk_paths = []
+        
+        for i in range(total_chunks):
+            start = i * chunk_size
+            end = min(start + chunk_size, len(compressed_data))
+            chunk_bytes = compressed_data[start:end]
+            
+            chunk_filename = f"storage/{username}_{file_name}.part{i}"
+            _, old_sha = get_github_file(chunk_filename)
+            
+            # Upload chunk với retry
+            if not api_call_with_retry(save_github_file, chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}"):
+                return {
+                    "success": False,
+                    "filename": file_name,
+                    "error": f"Lỗi tải chunk {i+1}/{total_chunks}!"
+                }
+            chunk_paths.append(chunk_filename)
+        
+        # Lưu metadata
+        file_key = f"{username}_{file_name}"
+        metadata["files"][file_key] = {
+            "username": username,
+            "filename": file_name,
+            "total_chunks": total_chunks,
+            "chunks": chunk_paths,
+            "size": file_size,
+            "upload_date": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "file_type": file_name.split('.')[-1].upper() if '.' in file_name else "UNKNOWN"
+        }
+        
+        if save_metadata(metadata, db_sha):
+            return {
+                "success": True,
+                "filename": file_name,
+                "size": file_size
+            }
+        else:
+            return {
+                "success": False,
+                "filename": file_name,
+                "error": "Lỗi cập nhật metadata!"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "filename": file_name,
+            "error": str(e)[:100]
+        }
+
 # --- THIẾT KẾ HEADER ---
 st.markdown("""
 <div class="app-header">
@@ -333,6 +430,8 @@ if "remember_me" not in st.session_state:
     st.session_state.remember_me = False
 if "upload_in_progress" not in st.session_state:
     st.session_state.upload_in_progress = False
+if "upload_results" not in st.session_state:
+    st.session_state.upload_results = []
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
@@ -439,115 +538,117 @@ else:
     
     st.divider()
     
-    # --- KHU VỰC TẢI LÊN FILE ---
+    # --- KHU VỰC TẢI LÊN NHIỀU FILE ---
     with st.container():
-        st.markdown("### 📤 Tải lên file mới")
-        st.caption(f"*📦 Hỗ trợ mọi định dạng file - Giới hạn tối đa 200MB*")
+        st.markdown("### 📤 Tải lên nhiều file")
+        st.caption(f"*📦 Hỗ trợ mọi định dạng file - Mỗi file tối đa 200MB - Có thể tải nhiều file cùng lúc*")
         
-        # Upload area với giao diện đẹp
-        uploaded_file = st.file_uploader(
-            "Kéo thả hoặc nhấp để chọn file",
+        # Upload area với giao diện đẹp - hỗ trợ nhiều file
+        uploaded_files = st.file_uploader(
+            "Kéo thả hoặc nhấp để chọn nhiều file",
             label_visibility="collapsed",
+            accept_multiple_files=True,
             key="file_uploader_main"
         )
         
-        if uploaded_file is not None and not st.session_state.upload_in_progress:
-            file_name = uploaded_file.name
-            raw_data = uploaded_file.read()
-            file_size = len(raw_data)
+        if uploaded_files and not st.session_state.upload_in_progress:
+            # Hiển thị danh sách file đã chọn
+            st.markdown("#### 📋 Danh sách file đã chọn:")
             
-            # Hiển thị thông tin file
-            with st.container():
-                col_info1, col_info2, col_info3 = st.columns([2, 1, 1])
-                with col_info1:
-                    st.info(f"📄 **{file_name}**")
-                with col_info2:
-                    st.info(f"💾 {format_size(file_size)}")
-                with col_info3:
-                    st.info(f"📅 {datetime.now().strftime('%d/%m/%Y')}")
+            total_size = 0
+            for file in uploaded_files:
+                file_size = len(file.getvalue())
+                total_size += file_size
+                st.info(f"📄 **{file.name}** - 💾 {format_size(file_size)}")
             
-            if file_size > 200 * 1024 * 1024:
-                st.error("❌ File vượt quá giới hạn 200MB!")
-            else:
-                # Kiểm tra file trùng
-                file_key = f"{st.session_state.username}_{file_name}"
-                is_existing = file_key in metadata["files"]
-                
-                if is_existing:
-                    st.warning(f"⚠️ File '{file_name}' đã tồn tại! Hành động này sẽ **ghi đè** file cũ.")
-                
-                col_upload_btn, col_cancel_btn = st.columns([3, 1])
-                with col_upload_btn:
-                    if st.button("🚀 Bắt đầu tải lên", use_container_width=True, type="primary"):
-                        st.session_state.upload_in_progress = True
+            st.markdown(f"**Tổng dung lượng: {format_size(total_size)}**")
+            
+            # Kiểm tra dung lượng tổng
+            if total_size > 500 * 1024 * 1024:
+                st.warning("⚠️ Tổng dung lượng các file vượt quá 500MB! Vui lòng chọn ít file hơn.")
+            
+            col_upload_btn, col_cancel_btn = st.columns([3, 1])
+            with col_upload_btn:
+                if st.button("🚀 Bắt đầu tải lên tất cả", use_container_width=True, type="primary"):
+                    st.session_state.upload_in_progress = True
+                    st.session_state.upload_results = []
+                    
+                    # Tạo progress bar tổng
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    total_files = len(uploaded_files)
+                    successful_uploads = 0
+                    failed_uploads = 0
+                    
+                    # Xử lý từng file
+                    for idx, file in enumerate(uploaded_files):
+                        status_text.text(f"📤 Đang xử lý file {idx+1}/{total_files}: {file.name}")
                         
-                        with st.spinner("⏳ Đang xử lý file..."):
-                            try:
-                                # Nén file
-                                compressed_data = zlib.compress(raw_data, level=9)
-                                
-                                # Chia nhỏ file
-                                chunk_size = 45 * 1024 * 1024
-                                total_chunks = math.ceil(len(compressed_data) / chunk_size)
-                                
-                                chunk_paths = []
-                                upload_success = True
-                                
-                                # Progress bar
-                                progress_bar = st.progress(0)
-                                status_text = st.empty()
-                                
-                                for i in range(total_chunks):
-                                    start = i * chunk_size
-                                    end = min(start + chunk_size, len(compressed_data))
-                                    chunk_bytes = compressed_data[start:end]
-                                    
-                                    chunk_filename = f"storage/{st.session_state.username}_{file_name}.part{i}"
-                                    _, old_sha = get_github_file(chunk_filename)
-                                    
-                                    status_text.text(f"📤 Đang tải chunk {i+1}/{total_chunks}...")
-                                    
-                                    # Upload chunk với retry
-                                    if not api_call_with_retry(save_github_file, chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}"):
-                                        upload_success = False
-                                        break
-                                    chunk_paths.append(chunk_filename)
-                                    progress_bar.progress((i + 1) / total_chunks)
-                                
-                                if upload_success:
-                                    # Lưu metadata
-                                    metadata["files"][file_key] = {
-                                        "username": st.session_state.username,
-                                        "filename": file_name,
-                                        "total_chunks": total_chunks,
-                                        "chunks": chunk_paths,
-                                        "size": file_size,
-                                        "upload_date": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                                        "file_type": file_name.split('.')[-1].upper() if '.' in file_name else "UNKNOWN"
-                                    }
-                                    
-                                    if save_metadata(metadata, db_sha):
-                                        progress_bar.empty()
-                                        status_text.empty()
-                                        st.success(f"✅ Đã tải lên thành công '{file_name}'!")
-                                        st.balloons()
-                                        st.session_state.upload_in_progress = False
-                                        time.sleep(0.5)
-                                        st.rerun()
-                                    else:
-                                        st.error("❌ Lỗi cập nhật metadata!")
+                        # Kiểm tra file trùng
+                        file_key = f"{st.session_state.username}_{file.name}"
+                        if file_key in metadata["files"]:
+                            st.warning(f"⚠️ File '{file.name}' đã tồn tại! Sẽ ghi đè file cũ.")
+                        
+                        # Upload file
+                        result = upload_single_file(
+                            file, 
+                            st.session_state.username, 
+                            metadata, 
+                            db_sha
+                        )
+                        
+                        # Cập nhật metadata và db_sha sau mỗi lần upload thành công
+                        if result["success"]:
+                            successful_uploads += 1
+                            # Lưu metadata mới
+                            db_sha = None  # Reset SHA vì đã thay đổi
+                            st.toast(f"✅ Đã tải lên: {result['filename']}", icon="✅")
+                        else:
+                            failed_uploads += 1
+                            st.error(f"❌ Lỗi tải file '{result['filename']}': {result.get('error', 'Lỗi không xác định')}")
+                        
+                        st.session_state.upload_results.append(result)
+                        
+                        # Cập nhật progress
+                        progress_bar.progress((idx + 1) / total_files)
+                    
+                    # Hoàn thành
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    # Hiển thị kết quả tổng hợp
+                    st.markdown("### 📊 Kết quả tải lên:")
+                    
+                    col_success, col_failed = st.columns(2)
+                    with col_success:
+                        st.success(f"✅ Thành công: {successful_uploads}/{total_files} file")
+                    with col_failed:
+                        if failed_uploads > 0:
+                            st.error(f"❌ Thất bại: {failed_uploads}/{total_files} file")
+                        else:
+                            st.info("🎉 Tất cả file đều tải lên thành công!")
+                    
+                    # Hiển thị chi tiết kết quả
+                    if st.session_state.upload_results:
+                        with st.expander("📝 Xem chi tiết kết quả từng file"):
+                            for result in st.session_state.upload_results:
+                                if result["success"]:
+                                    st.success(f"✅ {result['filename']} - {format_size(result['size'])}")
                                 else:
-                                    st.error("❌ Lỗi khi tải lên! Vui lòng thử lại.")
-                                    st.session_state.upload_in_progress = False
-                                    
-                            except Exception as e:
-                                st.error(f"❌ Lỗi: {str(e)[:100]}")
-                                st.session_state.upload_in_progress = False
-                
-                with col_cancel_btn:
-                    if st.button("❌ Hủy", use_container_width=True):
-                        st.session_state.upload_in_progress = False
-                        st.rerun()
+                                    st.error(f"❌ {result['filename']} - {result.get('error', 'Lỗi không xác định')}")
+                    
+                    st.session_state.upload_in_progress = False
+                    
+                    # Reload metadata mới
+                    metadata, db_sha = load_metadata()
+                    time.sleep(1)
+                    st.rerun()
+            
+            with col_cancel_btn:
+                if st.button("❌ Hủy", use_container_width=True):
+                    st.session_state.upload_in_progress = False
+                    st.rerun()
     
     st.divider()
     
