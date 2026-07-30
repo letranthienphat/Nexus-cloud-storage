@@ -2,19 +2,7 @@
     "users": {
         "Phát": "Tp27111510"
     },
-    "files": {
-        "Phát_NEXUS PROJECT.png": {
-            "username": "Phát",
-            "filename": "NEXUS PROJECT.png",
-            "total_chunks": 1,
-            "chunks": [
-                "storage/Phát_NEXUS PROJECT.png.part0"
-            ],
-            "size": 2216950,
-            "upload_date": "30/07/2026 08:30",
-            "file_type": "PNG"
-        }
-    },
+    "files": {},
     "folders": {},
     "devices": {}
 }
