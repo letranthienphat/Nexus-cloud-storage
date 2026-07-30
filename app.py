@@ -99,12 +99,37 @@ st.markdown("""
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
     }
     
+    .readme-container {
+        background: #f8f9ff;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border: 1px solid #e0e0e0;
+        max-height: 400px;
+        overflow-y: auto;
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+    
+    .readme-container.dark {
+        background: #1a1a2e;
+        border-color: #2a2a4e;
+        color: #e0e0e0;
+    }
+    
     @media (max-width: 768px) {
         .app-header h1 {
             font-size: 1.8rem;
         }
         .file-item {
             padding: 0.75rem;
+        }
+        .readme-container {
+            max-height: 300px;
+            padding: 1rem;
+            font-size: 0.8rem;
         }
     }
     
@@ -114,6 +139,11 @@ st.markdown("""
             border-left-color: #667eea;
         }
         .file-name {
+            color: #e0e0e0;
+        }
+        .readme-container {
+            background: #1a1a2e;
+            border-color: #2a2a4e;
             color: #e0e0e0;
         }
     }
@@ -178,6 +208,33 @@ def delete_github_file(path: str, sha: str, message: str = "Delete") -> bool:
     except Exception as e:
         return False
 
+# --- HÀM LẤY README ---
+@st.cache_data(ttl=300)  # Cache 5 phút
+def get_readme_content() -> Tuple[Optional[str], Optional[str]]:
+    """Lấy nội dung file README.md từ GitHub"""
+    try:
+        # Thử lấy README.md
+        file_bytes, _ = get_github_file("README.md")
+        if file_bytes:
+            try:
+                content = file_bytes.decode('utf-8')
+                return content, None
+            except UnicodeDecodeError:
+                return None, "Không thể giải mã nội dung README.md"
+        
+        # Thử lấy README
+        file_bytes, _ = get_github_file("README")
+        if file_bytes:
+            try:
+                content = file_bytes.decode('utf-8')
+                return content, None
+            except UnicodeDecodeError:
+                return None, "Không thể giải mã nội dung README"
+        
+        return None, "Không tìm thấy file README.md hoặc README trong thư mục chính"
+    except Exception as e:
+        return None, f"Lỗi khi lấy README: {str(e)[:100]}"
+
 # --- CƠ CHẾ ĐỒNG BỘ CƠ SỞ DỮ LIỆU ---
 @st.cache_data(ttl=0)
 def load_metadata() -> Tuple[Dict, Optional[str]]:
@@ -214,26 +271,20 @@ def save_metadata(metadata: Dict, sha: Optional[str]) -> Tuple[bool, Optional[st
 
 # --- HÀM NÉN VÀ GIẢI NÉN ĐƠN GIẢN ---
 def compress_data(data: bytes) -> bytes:
-    """Nén dữ liệu với header để kiểm tra"""
     try:
-        # Sử dụng zlib với mức nén cao nhất
         compressed = zlib.compress(data, level=9)
         return compressed
     except Exception as e:
         raise Exception(f"Lỗi nén dữ liệu: {str(e)}")
 
 def decompress_data(compressed_data: bytes) -> bytes:
-    """Giải nén dữ liệu với nhiều phương pháp"""
     try:
-        # Thử giải nén với zlib
         return zlib.decompress(compressed_data)
     except zlib.error as e1:
         try:
-            # Thử với wbits khác
             return zlib.decompress(compressed_data, wbits=zlib.MAX_WBITS)
         except zlib.error as e2:
             try:
-                # Thử giải nén với gzip
                 import gzip
                 return gzip.decompress(compressed_data)
             except Exception as e3:
@@ -269,7 +320,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
     uploaded_chunks = []
     
     try:
-        # Nén dữ liệu
         compressed_data = compress_data(raw_data)
         
         if len(compressed_data) == 0:
@@ -279,7 +329,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
                 "error": "Lỗi nén dữ liệu!"
             }
         
-        # Chia nhỏ file
         chunk_size = 45 * 1024 * 1024
         total_chunks = math.ceil(len(compressed_data) / chunk_size)
         
@@ -291,7 +340,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
             chunk_bytes = compressed_data[start:end]
             
             if len(chunk_bytes) == 0:
-                # Rollback
                 for uploaded_path in uploaded_chunks:
                     _, sha = get_github_file(uploaded_path)
                     if sha:
@@ -308,7 +356,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
             success, error = save_github_file(chunk_filename, chunk_bytes, old_sha, f"Upload chunk {i+1}/{total_chunks}")
             
             if not success:
-                # Rollback
                 for uploaded_path in uploaded_chunks:
                     _, sha = get_github_file(uploaded_path)
                     if sha:
@@ -322,7 +369,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
             uploaded_chunks.append(chunk_filename)
             chunk_paths.append(chunk_filename)
         
-        # Lưu metadata
         file_key = f"{username}_{file_name}"
         metadata["files"][file_key] = {
             "username": username,
@@ -343,7 +389,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
                 "chunks": total_chunks
             }
         else:
-            # Rollback
             for chunk_path in chunk_paths:
                 _, sha = get_github_file(chunk_path)
                 if sha:
@@ -355,7 +400,6 @@ def upload_single_file(file_data, username, metadata, db_sha):
             }
             
     except Exception as e:
-        # Rollback
         for chunk_path in uploaded_chunks:
             _, sha = get_github_file(chunk_path)
             if sha:
@@ -372,7 +416,6 @@ def download_file(file_info):
         full_compressed = bytearray()
         missing_chunks = []
         
-        # Tải tất cả chunks
         for i, chunk_path in enumerate(file_info["chunks"]):
             c_bytes, _ = get_github_file(chunk_path)
             if c_bytes is None:
@@ -386,7 +429,6 @@ def download_file(file_info):
         if len(full_compressed) == 0:
             return None, "Dữ liệu tải về bị rỗng"
         
-        # Giải nén dữ liệu
         try:
             original_data = decompress_data(bytes(full_compressed))
             return original_data, None
@@ -419,6 +461,8 @@ if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "file_uploader_key" not in st.session_state:
     st.session_state.file_uploader_key = 0
+if "show_readme" not in st.session_state:
+    st.session_state.show_readme = False
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
@@ -528,12 +572,80 @@ else:
             st.rerun()
     
     with col_logout:
-        if st.button("🚪 Đăng xuất", use_container_width=True, type="primary"):
-            st.session_state.logged_in = False
-            st.session_state.username = ""
-            st.session_state.remember_me = False
-            st.query_params.clear()
-            st.rerun()
+        # Thêm nút thông tin phiên bản và đăng xuất
+        col_ver, col_log = st.columns([1, 1])
+        with col_ver:
+            if st.button("ℹ️ Phiên bản", use_container_width=True):
+                st.session_state.show_readme = not st.session_state.show_readme
+                st.rerun()
+        
+        with col_log:
+            if st.button("🚪 Đăng xuất", use_container_width=True, type="primary"):
+                st.session_state.logged_in = False
+                st.session_state.username = ""
+                st.session_state.remember_me = False
+                st.session_state.show_readme = False
+                st.query_params.clear()
+                st.rerun()
+    
+    # Hiển thị README nếu được bật
+    if st.session_state.show_readme:
+        with st.container():
+            st.markdown("### 📖 Thông tin phiên bản")
+            
+            with st.spinner("⏳ Đang tải thông tin phiên bản..."):
+                readme_content, error = get_readme_content()
+                
+                if error:
+                    st.error(f"❌ {error}")
+                else:
+                    # Hiển thị nội dung README
+                    st.markdown("#### Nội dung README.md:")
+                    
+                    # Tạo container với scroll
+                    st.markdown(f"""
+                    <div class="readme-container">
+                        {readme_content}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Nút copy
+                    col_copy, col_close = st.columns([1, 1])
+                    with col_copy:
+                        # Tạo nút copy với JavaScript
+                        copy_script = f"""
+                        <script>
+                        function copyReadme() {{
+                            const content = `{readme_content.replace('`', '\\`').replace('$', '\\$')}`;
+                            navigator.clipboard.writeText(content).then(function() {{
+                                alert('✅ Đã copy nội dung README vào clipboard!');
+                            }}, function(err) {{
+                                alert('❌ Lỗi copy: ' + err);
+                            }});
+                        }}
+                        </script>
+                        <button onclick="copyReadme()" style="width:100%; padding:0.5rem; background:#667eea; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer;">
+                            📋 Copy toàn bộ nội dung
+                        </button>
+                        """
+                        st.components.v1.html(copy_script, height=50)
+                    
+                    with col_close:
+                        if st.button("❌ Đóng", use_container_width=True):
+                            st.session_state.show_readme = False
+                            st.rerun()
+                    
+                    # Thêm nút copy dự phòng bằng Python
+                    st.download_button(
+                        label="💾 Tải xuống README.md",
+                        data=readme_content,
+                        file_name="README.md",
+                        mime="text/markdown",
+                        key="download_readme",
+                        use_container_width=True
+                    )
+            
+            st.divider()
     
     st.divider()
     
@@ -603,7 +715,6 @@ else:
                         st.session_state.upload_results.append(result)
                         progress_bar.progress((idx + 1) / total_files)
                         
-                        # Cập nhật metadata sau mỗi file
                         if result["success"]:
                             current_metadata, current_db_sha = load_metadata()
                     
@@ -708,7 +819,6 @@ else:
                             if error:
                                 st.error(f"❌ Lỗi tải file: {error}")
                                 
-                                # Hiển thị thông tin debug
                                 with st.expander("🔍 Thông tin debug"):
                                     st.write("**Thông tin file:**")
                                     st.write(f"- Tên: {f_name}")
