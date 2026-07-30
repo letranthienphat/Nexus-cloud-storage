@@ -2,7 +2,19 @@
     "users": {
         "Phát": "Tp27111510"
     },
-    "files": {},
+    "files": {
+        "Phát_app.py": {
+            "username": "Phát",
+            "filename": "app.py",
+            "total_chunks": 1,
+            "chunks": [
+                "storage/Phát_app.py.part0"
+            ],
+            "size": 53118,
+            "upload_date": "30/07/2026 08:31",
+            "file_type": "PY"
+        }
+    },
     "folders": {},
     "devices": {}
 }
