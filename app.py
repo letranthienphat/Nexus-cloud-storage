@@ -99,6 +99,14 @@ st.markdown("""
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
     }
     
+    .upload-status-box {
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        background: #f8f9ff;
+        border: 1px solid #e0e0e0;
+    }
+    
     @media (max-width: 768px) {
         .app-header h1 {
             font-size: 1.8rem;
@@ -115,6 +123,10 @@ st.markdown("""
         }
         .file-name {
             color: #e0e0e0;
+        }
+        .upload-status-box {
+            background: #1a1a2e;
+            border-color: #2a2a4e;
         }
     }
 </style>
@@ -136,7 +148,7 @@ def api_call_with_retry(func, *args, **kwargs):
     return None
 
 # --- CÁC HÀM XỬ LÝ LƯU TRỮ VỚI GITHUB ---
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=0)  # Tắt cache để luôn lấy dữ liệu mới
 def get_github_file(path: str) -> Tuple[Optional[bytes], Optional[str]]:
     try:
         response = requests.get(f"{API_URL}/{path}", headers=HEADERS, timeout=30)
@@ -180,7 +192,7 @@ def delete_github_file(path: str, sha: str, message: str = "Delete") -> bool:
         return False
 
 # --- CƠ CHẾ ĐỒNG BỘ CƠ SỞ DỮ LIỆU ---
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=0)  # Tắt cache để luôn lấy dữ liệu mới
 def load_metadata() -> Tuple[Dict, Optional[str]]:
     file_bytes, sha = get_github_file("storage/data.json")
     if file_bytes:
@@ -207,6 +219,7 @@ def save_metadata(metadata: Dict, sha: Optional[str]) -> Tuple[bool, Optional[st
         content_bytes = json.dumps(metadata, indent=4, ensure_ascii=False).encode('utf-8')
         success, error = save_github_file("storage/data.json", content_bytes, sha, "Cập nhật metadata hệ thống")
         if success:
+            # Clear cache để load dữ liệu mới
             load_metadata.clear()
             get_github_file.clear()
             return True, None
@@ -267,6 +280,11 @@ def upload_single_file(file_data, username, metadata, db_sha):
             chunk_bytes = compressed_data[start:end]
             
             if len(chunk_bytes) == 0:
+                # Rollback
+                for uploaded_path in uploaded_chunks:
+                    _, sha = get_github_file(uploaded_path)
+                    if sha:
+                        delete_github_file(uploaded_path, sha, f"Rollback chunk")
                 return {
                     "success": False,
                     "filename": file_name,
@@ -332,6 +350,12 @@ def upload_single_file(file_data, username, metadata, db_sha):
             }
             
     except zlib.error as e:
+        # Rollback nếu có lỗi
+        for chunk_path in uploaded_chunks:
+            _, sha = get_github_file(chunk_path)
+            if sha:
+                delete_github_file(chunk_path, sha, f"Rollback exception")
+        
         return {
             "success": False,
             "filename": file_name,
@@ -373,6 +397,8 @@ if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "file_uploader_key" not in st.session_state:
     st.session_state.file_uploader_key = 0
+if "last_update" not in st.session_state:
+    st.session_state.last_update = time.time()
 
 # Đọc dữ liệu mới nhất từ GitHub
 metadata, db_sha = load_metadata()
@@ -382,6 +408,7 @@ if st.session_state.force_refresh:
     get_github_file.clear()
     metadata, db_sha = load_metadata()
     st.session_state.force_refresh = False
+    st.session_state.last_update = time.time()
 
 # --- XỬ LÝ AUTO LOGIN ---
 if not st.session_state.logged_in:
@@ -474,6 +501,7 @@ else:
         st.markdown(f"### 👋 Xin chào, **{st.session_state.username}**")
     
     with col_stats:
+        # Đếm số file của user hiện tại
         file_count = sum(1 for v in metadata["files"].values() if v["username"] == st.session_state.username)
         st.markdown(f"**📊 {file_count}** file đã lưu")
         
@@ -530,6 +558,7 @@ else:
                     successful_uploads = 0
                     failed_uploads = 0
                     
+                    # Load metadata mới nhất
                     current_metadata, current_db_sha = load_metadata()
                     
                     for idx, file in enumerate(uploaded_files):
@@ -548,7 +577,7 @@ else:
                         
                         if result["success"]:
                             successful_uploads += 1
-                            current_db_sha = None
+                            current_db_sha = None  # Reset SHA vì metadata đã thay đổi
                             st.toast(f"✅ Đã tải lên: {result['filename']} ({result.get('chunks', 0)} chunks)", icon="✅")
                         else:
                             failed_uploads += 1
@@ -556,10 +585,16 @@ else:
                         
                         st.session_state.upload_results.append(result)
                         progress_bar.progress((idx + 1) / total_files)
+                        
+                        # Cập nhật lại metadata sau mỗi file upload thành công
+                        if result["success"]:
+                            # Reload metadata để có dữ liệu mới nhất
+                            current_metadata, current_db_sha = load_metadata()
                     
                     progress_bar.empty()
                     status_text.empty()
                     
+                    # Hiển thị kết quả
                     st.markdown("### 📊 Kết quả tải lên:")
                     col_success, col_failed = st.columns(2)
                     with col_success:
@@ -582,7 +617,8 @@ else:
                     st.session_state.force_refresh = True
                     st.session_state.file_uploader_key += 1
                     
-                    time.sleep(1)
+                    # Force refresh để cập nhật số lượng file
+                    time.sleep(0.5)
                     st.rerun()
             
             with col_cancel_btn:
@@ -595,6 +631,7 @@ else:
     # --- DANH SÁCH FILE ĐÃ LƯU ---
     st.markdown("### 📂 Kho lưu trữ của bạn")
     
+    # Lọc file của user hiện tại
     my_files = [v for k, v in metadata["files"].items() if v["username"] == st.session_state.username]
     
     if not my_files:
@@ -607,6 +644,7 @@ else:
             </div>
             """, unsafe_allow_html=True)
     else:
+        # Sắp xếp theo ngày tải lên (mới nhất lên đầu)
         my_files.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
         
         for idx, f in enumerate(my_files):
